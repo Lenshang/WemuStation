@@ -24,7 +24,12 @@ export function scanSystem(romRoot, sysDef) {
   const byLower = new Map();
   for (const e of rootEntries) if (e.isDirectory()) byLower.set(e.name.toLowerCase(), e.name);
   const wanted = [...new Set([sysDef.id, ...(sysDef.aliases || [])].map((a) => String(a).toLowerCase()))];
-  const dirs = [...new Set(wanted.map((w) => byLower.get(w)).filter(Boolean))];
+  // a folder belongs to this system when its name equals an id/alias, or
+  // starts with one followed by a separator ("FBNEO ACT hack" → fbneo,
+  // "SFC-MSU1" → snes, "PS1 hack" → psx)
+  const match = (low) => wanted.some((w) => low === w || low.startsWith(w + ' ') || low.startsWith(w + '-') || low.startsWith(w + '_'));
+  const dirs = [];
+  for (const [low, name] of byLower) if (match(low)) dirs.push(name);
   for (const name of dirs) {
     const sub = scanDir(path.join(romRoot, name), name, sysDef);
     result.games.push(...sub.games);
@@ -39,7 +44,10 @@ function scanDir(dir, dirName, sysDef) {
   const exts = new Set(sysDef.extensions.map((e) => e.toLowerCase()));
   const seen = new Set();
 
-  // 1) collect every gamelist.xml in the tree: map absolute-dir → meta map
+  // 1) collect every gamelist.xml in the tree: map absolute-dir → meta map.
+  //    Dirs without one but with Pegasus metadata (metadata.pegasus.txt /
+  //    metadata.txt) are parsed into the same shape; gamelist.xml wins if
+  //    both exist.
   const gamelists = new Map(); // absDir -> { byPath: Map, dir: absDir }
   const collectGamelist = (d, depth) => {
     if (depth > 6) return;
@@ -48,6 +56,12 @@ function scanDir(dir, dirName, sysDef) {
       const m = readGamelist(d);
       if (m.size) {
         gamelists.set(d, { byPath: m, dir: d });
+        result.hasGamelist = true;
+      }
+    } else {
+      const peg = parsePegasus(d);
+      if (peg.size) {
+        gamelists.set(d, { byPath: peg, dir: d });
         result.hasGamelist = true;
       }
     }
@@ -182,6 +196,95 @@ function readGamelist(dir) {
 
 function normKey(p) {
   return p.replace(/^\.\//, '').replace(/\\/g, '/').toLowerCase();
+}
+
+// Pegasus frontend metadata (metadata.pegasus.txt / metadata.txt): plain-text
+// `key: value` records, one record per `game:` key, ROM path in `file:`
+// relative to the metadata file's directory. Assets use namespaced keys
+// (assets.box_front / assets.screenshot / assets.logo) with legacy aliases
+// (boxfront / screenshot / logo). Parsed into the same byPath shape as
+// readGamelist so all downstream logic (nearest-metadata lookup, media
+// resolution, search) works unchanged.
+function parsePegasus(dir) {
+  const byPath = new Map();
+  let file = null;
+  for (const n of ['metadata.pegasus.txt', 'metadata.txt']) {
+    const p = path.join(dir, n);
+    if (fs.existsSync(p)) { file = p; break; }
+  }
+  if (!file) return byPath;
+
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    console.error(`[library] failed to parse ${file}: ${e.message}`);
+    return byPath;
+  }
+
+  // fold indented continuation lines into the previous line
+  const lines = [];
+  for (const raw of text.split(/\r?\n/)) {
+    if (!raw.trim()) continue;
+    if (/^[ \t]/.test(raw) && lines.length) lines[lines.length - 1] += ' ' + raw.trim();
+    else lines.push(raw.trim());
+  }
+
+  let cur = null;
+  const flush = () => {
+    if (!cur || !cur.__file) { cur = null; return; }
+    const rel = cur.__file;
+    byPath.set(normKey('./' + rel), cur);
+    byPath.set(normKey(path.basename(rel)), cur);
+    delete cur.__file;
+    cur = null;
+  };
+  const setOnce = (obj, field, val) => { if (val && !obj[field]) obj[field] = val; };
+
+  for (const line of lines) {
+    const idx = line.indexOf(':');
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim().toLowerCase();
+    const val = line.slice(idx + 1).trim();
+    if (key === 'game') { flush(); cur = { name: val }; continue; }
+    if (!cur) continue;
+    switch (key) {
+      case 'file':
+        cur.__file = val.replace(/^\.?\//, '').split('\\').join('/');
+        break;
+      case 'description':
+        cur.desc = val.replace(/\\n/g, '\n');
+        break;
+      case 'developer': cur.developer = val; break;
+      case 'publisher': cur.publisher = val; break;
+      case 'genre': cur.genre = val; break;
+      case 'players': cur.players = val; break;
+      case 'releasedate':
+        // Pegasus uses ISO dates; fmtDate expects a leading YYYYMMDD
+        cur.releasedate = val.replace(/\D/g, '').slice(0, 8);
+        break;
+      case 'rating':
+        cur.rating = val.endsWith('%') ? String(parseFloat(val) / 100) : val;
+        break;
+      case 'screenshot':
+        setOnce(cur, 'screenshot', val);
+        setOnce(cur, 'image', val);
+        break;
+      case 'boxfront': case 'assets.boxfront': case 'assets.box_front':
+        setOnce(cur, 'image', val);
+        break;
+      case 'logo': case 'marquee': case 'assets.logo': case 'assets.marquee':
+        setOnce(cur, 'marquee', val);
+        break;
+      case 'assets.screenshot':
+        setOnce(cur, 'screenshot', val);
+        setOnce(cur, 'image', val);
+        break;
+      // ignored: collection / launch / launcher / sortby / x-* / unknown keys
+    }
+  }
+  flush();
+  return byPath;
 }
 
 // Strip extension and common scene tags from a filename for display

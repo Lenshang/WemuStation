@@ -180,7 +180,7 @@ export const SYSTEMS = [
   },
   {
     id: 'virtualboy',
-    aliases: ['vb', 'nintendovirtualboy'],
+    aliases: ['vb', 'nintendovirtualboy', 'virtual boy'],
     fullName: 'Nintendo Virtual Boy',
     shortName: 'Virtual Boy',
     manufacturer: 'Nintendo',

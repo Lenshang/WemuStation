@@ -75,6 +75,12 @@ roms/
 `FBA`/`Arcade` → 街机；`MAME4all`/`MAME2003Plus` → MAME。完整别名表见
 `wemu/server/lib/systems.js` 的 `aliases` 字段，按需可自行追加。
 
+**支持 Pegasus 元数据**：目录内没有 `gamelist.xml` 但有 `metadata.pegasus.txt`（或
+`metadata.txt`）时自动解析——游戏名、描述、开发商、厂商、日期、评分，以及
+`assets.box_front` / `assets.screenshot` / `assets.logo` 媒体字段。两种元数据同时存在时
+`gamelist.xml` 优先。目录名允许系统别名前缀（如 `FBNEO ACT hack`、`SFC-MSU1`、`PS1 hack`
+分别归入 FBN / SNES / PSX）。
+
 ## 本地开发
 
 ```bash
