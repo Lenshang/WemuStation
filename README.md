@@ -69,6 +69,12 @@ roms/
 └── bios/         # neogeo.zip pgm.zip scph1001.bin gb_bios.bin ...
 ```
 
+**文件夹命名随意**：每个系统定义了常见别名，大小写不敏感，多个目录自动合并扫描。例如
+`FC`、`Famicom`、`FamilyComputer`、`nes` 都会并入 NES；`SFC`/`SuperFamicom` → SNES；
+`MD`/`Genesis` → Mega Drive；`PCE`/`TG16` → PC Engine；`PS1`/`PlayStation` → PSX；
+`FBA`/`Arcade` → 街机；`MAME4all`/`MAME2003Plus` → MAME。完整别名表见
+`wemu/server/lib/systems.js` 的 `aliases` 字段，按需可自行追加。
+
 ## 本地开发
 
 ```bash

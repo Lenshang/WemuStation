@@ -9,10 +9,32 @@ import { parseXML, childrenOf, firstChild, textOf } from './xml.js';
 // - One gamelist.xml at the SYSTEM ROOT may describe games in ANY subdirectory
 //   (R36S convention); media paths resolve relative to the gamelist's dir.
 
+// Resolve all rom-root subfolders belonging to a system: the system id plus
+// any declared aliases, matched case-insensitively (downloaded packs name the
+// same console "FC" / "FAMILYCOMPUTER" / "NES", "SFC" / "SNES", "MD" /
+// "GENESIS"…). Every matched folder is scanned and the results merged.
 export function scanSystem(romRoot, sysDef) {
-  const dir = path.join(romRoot, sysDef.id);
   const result = { games: [], hasGamelist: false };
-  if (!fs.existsSync(dir)) return result;
+  let rootEntries;
+  try {
+    rootEntries = fs.readdirSync(romRoot, { withFileTypes: true });
+  } catch {
+    return result;
+  }
+  const byLower = new Map();
+  for (const e of rootEntries) if (e.isDirectory()) byLower.set(e.name.toLowerCase(), e.name);
+  const wanted = [...new Set([sysDef.id, ...(sysDef.aliases || [])].map((a) => String(a).toLowerCase()))];
+  const dirs = [...new Set(wanted.map((w) => byLower.get(w)).filter(Boolean))];
+  for (const name of dirs) {
+    const sub = scanDir(path.join(romRoot, name), name, sysDef);
+    result.games.push(...sub.games);
+    result.hasGamelist = result.hasGamelist || sub.hasGamelist;
+  }
+  return result;
+}
+
+function scanDir(dir, dirName, sysDef) {
+  const result = { games: [], hasGamelist: false };
 
   const exts = new Set(sysDef.extensions.map((e) => e.toLowerCase()));
   const seen = new Set();
@@ -103,7 +125,7 @@ export function scanSystem(romRoot, sysDef) {
         playcount: Number(meta.playcount || 0),
         lastplayed: fmtDate(meta.lastplayed),
         size: st.size,
-        url: '/roms/' + sysDef.id + '/' + encodeURIComponent(path.relative(dir, full).split(path.sep).join('/'))
+        url: '/roms/' + dirName + '/' + encodeURIComponent(path.relative(dir, full).split(path.sep).join('/'))
       });
     }
   };
@@ -116,7 +138,7 @@ export function scanSystem(romRoot, sysDef) {
       const abs = path.resolve(gamelistDir || dir, c.replace(/^\.\//, ''));
       const rel = path.relative(dir, abs).split(path.sep).join('/');
       if (rel.startsWith('..')) continue; // escapes the rom dir; cannot serve
-      return '/roms/' + sysDef.id + '/' + rel.split('/').map(encodeURIComponent).join('/');
+      return '/roms/' + dirName + '/' + rel.split('/').map(encodeURIComponent).join('/');
     }
     return '';
   }

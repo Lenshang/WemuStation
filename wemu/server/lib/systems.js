@@ -3,6 +3,7 @@
 export const SYSTEMS = [
   {
     id: 'nes',
+    aliases: ['fc', 'famicom', 'familycomputer'],
     fullName: 'Nintendo Entertainment System',
     shortName: 'NES',
     manufacturer: 'Nintendo',
@@ -13,6 +14,7 @@ export const SYSTEMS = [
   },
   {
     id: 'snes',
+    aliases: ['sfc', 'superfamicom', 'super-nintendo'],
     fullName: 'Super Nintendo Entertainment System',
     shortName: 'SNES',
     manufacturer: 'Nintendo',
@@ -23,6 +25,7 @@ export const SYSTEMS = [
   },
   {
     id: 'megadrive',
+    aliases: ['md', 'genesis', 'segagenesis', 'mega-drive'],
     fullName: 'Sega Mega Drive / Genesis',
     shortName: 'Mega Drive',
     manufacturer: 'Sega',
@@ -33,6 +36,7 @@ export const SYSTEMS = [
   },
   {
     id: 'pcengine',
+    aliases: ['pce', 'tg16', 'turbografx16', 'turbografx', 'pcecd', 'pcenginecd'],
     fullName: 'PC Engine / TurboGrafx-16',
     shortName: 'PC Engine',
     manufacturer: 'NEC',
@@ -43,6 +47,7 @@ export const SYSTEMS = [
   },
   {
     id: 'gba',
+    aliases: ['gameboyadvance', 'agb'],
     fullName: 'Game Boy Advance',
     shortName: 'GBA',
     manufacturer: 'Nintendo',
@@ -53,6 +58,7 @@ export const SYSTEMS = [
   },
   {
     id: 'gb',
+    aliases: ['gameboy', 'dmg'],
     fullName: 'Game Boy / Game Boy Color',
     shortName: 'Game Boy',
     manufacturer: 'Nintendo',
@@ -63,6 +69,7 @@ export const SYSTEMS = [
   },
   {
     id: 'psx',
+    aliases: ['ps1', 'playstation', 'sonyplaystation', 'psone'],
     fullName: 'Sony PlayStation',
     shortName: 'PlayStation',
     manufacturer: 'Sony',
@@ -73,6 +80,7 @@ export const SYSTEMS = [
   },
   {
     id: 'gbc',
+    aliases: ['gameboycolor', 'cgb'],
     fullName: 'Game Boy Color',
     shortName: 'Game Boy Color',
     manufacturer: 'Nintendo',
@@ -82,6 +90,7 @@ export const SYSTEMS = [
   },
   {
     id: 'gamegear',
+    aliases: ['gg', 'segagamegear'],
     fullName: 'Sega Game Gear',
     shortName: 'Game Gear',
     manufacturer: 'Sega',
@@ -91,6 +100,7 @@ export const SYSTEMS = [
   },
   {
     id: 'fbneo',
+    aliases: ['fba', 'finalburnneo', 'arcade'],
     fullName: 'Arcade (FinalBurn Neo)',
     shortName: 'Arcade',
     manufacturer: 'Arcade',
@@ -100,6 +110,7 @@ export const SYSTEMS = [
   },
   {
     id: 'neogeo',
+    aliases: ['neo-geo', 'snk-neogeo'],
     fullName: 'Neo Geo Arcade',
     shortName: 'Neo Geo',
     manufacturer: 'SNK',
@@ -109,6 +120,7 @@ export const SYSTEMS = [
   },
   {
     id: 'cps1',
+    aliases: ['cps-1', 'capcomcps1'],
     fullName: 'Arcade (CPS-1)',
     shortName: 'CPS-1',
     manufacturer: 'Capcom',
@@ -118,6 +130,7 @@ export const SYSTEMS = [
   },
   {
     id: 'cps2',
+    aliases: ['cps-2', 'capcomcps2'],
     fullName: 'Arcade (CPS-2)',
     shortName: 'CPS-2',
     manufacturer: 'Capcom',
@@ -127,6 +140,7 @@ export const SYSTEMS = [
   },
   {
     id: 'cps3',
+    aliases: ['cps-3', 'capcomcps3'],
     fullName: 'Arcade (CPS-3)',
     shortName: 'CPS-3',
     manufacturer: 'Capcom',
@@ -136,6 +150,7 @@ export const SYSTEMS = [
   },
   {
     id: 'mame',
+    aliases: ['mame2003', 'mame2003plus', 'mame4all'],
     fullName: 'Arcade (MAME 2003 Plus)',
     shortName: 'MAME',
     manufacturer: 'MAME Team',
@@ -145,6 +160,7 @@ export const SYSTEMS = [
   },
   {
     id: 'ngp',
+    aliases: ['neogeopocket'],
     fullName: 'Neo Geo Pocket',
     shortName: 'Neo Geo Pocket',
     manufacturer: 'SNK',
@@ -154,6 +170,7 @@ export const SYSTEMS = [
   },
   {
     id: 'ngpc',
+    aliases: ['neogeopocketcolor'],
     fullName: 'Neo Geo Pocket Color',
     shortName: 'Neo Geo Pocket Color',
     manufacturer: 'SNK',
@@ -163,6 +180,7 @@ export const SYSTEMS = [
   },
   {
     id: 'virtualboy',
+    aliases: ['vb', 'nintendovirtualboy'],
     fullName: 'Nintendo Virtual Boy',
     shortName: 'Virtual Boy',
     manufacturer: 'Nintendo',
@@ -172,6 +190,7 @@ export const SYSTEMS = [
   },
   {
     id: 'wonderswan',
+    aliases: ['ws', 'wonderswan-mono'],
     fullName: 'Bandai WonderSwan',
     shortName: 'WonderSwan',
     manufacturer: 'Bandai',
@@ -181,6 +200,7 @@ export const SYSTEMS = [
   },
   {
     id: 'wonderswancolor',
+    aliases: ['wsc'],
     fullName: 'Bandai WonderSwan Color',
     shortName: 'WonderSwan Color',
     manufacturer: 'Bandai',
@@ -190,6 +210,7 @@ export const SYSTEMS = [
   },
   {
     id: 'gameandwatch',
+    aliases: ['gw', 'gnw', 'nintendogame-watch'],
     fullName: 'Nintendo Game & Watch',
     shortName: 'Game & Watch',
     manufacturer: 'Nintendo',
