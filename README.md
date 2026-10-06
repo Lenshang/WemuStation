@@ -28,7 +28,7 @@ mkdir -p roms data && docker compose up -d
 ```yaml
 services:
   wemustation:
-    image: ghcr.io/YOUR_GITHUB_USERNAME/wemustation:latest
+    image: ghcr.io/lenshang/wemustation:latest
     container_name: wemustation
     ports:
       - "4464:4464"     # Web 界面（HTTP）

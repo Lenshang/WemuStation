@@ -2,7 +2,7 @@
 # 用法：改镜像里的用户名为你的 GitHub 用户名，然后 docker compose up -d
 services:
   wemustation:
-    image: ghcr.io/YOUR_GITHUB_USERNAME/wemustation:latest
+    image: ghcr.io/lenshang/wemustation:latest
     container_name: wemustation
     ports:
       - "4464:4464"     # Web 界面（HTTP）
