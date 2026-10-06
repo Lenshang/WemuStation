@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set ROM_DIR="J:\¿ªÔ´ÕÆ»ú\R36S\R36Roms"
+set ROM_DIR=O:\Pegasus G\Roms
 cd /d "%~dp0"
 
 if not exist "node_modules\" (

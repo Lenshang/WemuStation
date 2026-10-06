@@ -217,6 +217,24 @@ export const SYSTEMS = [
     releaseYear: '1980',
     themeDir: 'gameandwatch',
     extensions: ['gw', 'mgw', 'zip']
+  },
+  {
+    id: 'sms',
+    fullName: 'Sega Master System',
+    shortName: 'Master System',
+    manufacturer: 'Sega',
+    releaseYear: '1985',
+    themeDir: 'sms',
+    extensions: ['sms', 'zip', '7z']
+  },
+  {
+    id: '3do',
+    fullName: '3DO Interactive Multiplayer',
+    shortName: '3DO',
+    manufacturer: 'The 3DO Company',
+    releaseYear: '1993',
+    themeDir: '3do',
+    extensions: ['iso', 'chd', 'cue', 'zip']
   }
 ];
 

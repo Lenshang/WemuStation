@@ -44,7 +44,9 @@ const RA_CORES: Record<string, string> = {
   virtualboy: 'mednafen_vb',
   wonderswan: 'mednafen_wswan',
   wonderswancolor: 'mednafen_wswan',
-  gameandwatch: 'gw'
+  gameandwatch: 'gw',
+  sms: 'genesis_plus_gx',
+  '3do': 'opera'
 };
 
 const ROM_EXTENSIONS: Record<string, string[]> = {
@@ -68,7 +70,9 @@ const ROM_EXTENSIONS: Record<string, string[]> = {
   virtualboy: ['vb', 'vboy', 'bin', 'zip', '7z'],
   wonderswan: ['ws', 'zip', '7z'],
   wonderswancolor: ['ws', 'wsc', 'zip', '7z'],
-  gameandwatch: ['gw', 'mgw', 'zip']
+  gameandwatch: ['gw', 'mgw', 'zip'],
+  sms: ['sms', 'zip', '7z'],
+  '3do': ['iso', 'chd', 'cue', 'zip']
 };
 
 export class App {

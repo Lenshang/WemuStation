@@ -26,7 +26,9 @@ const config = {
   ...(fs.existsSync(CONFIG_FILE) ? JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) : {})
 };
 
-const ROMS = process.env.ROM_DIR || (config.romDir ? path.resolve(config.romDir) : path.join(ROOT, 'roms'));
+// ROM_DIR may carry stray quotes from Windows `set X="..."` in .bat files
+const romDirEnv = (process.env.ROM_DIR || '').replace(/^"+|"+$/g, '').trim();
+const ROMS = path.resolve(romDirEnv || config.romDir || path.join(ROOT, 'roms'));
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -145,6 +147,7 @@ function safeName(name) {
 
 // ---------- API ----------
 function apiSystems() {
+  // systems without any scanned ROMs are hidden (ES-DE behavior)
   return SYSTEMS.map((s) => {
     let count = 0;
     try {
@@ -159,7 +162,7 @@ function apiSystems() {
       themeDir: s.themeDir,
       gameCount: count
     };
-  });
+  }).filter((s) => s.gameCount > 0);
 }
 
 async function handleAPI(req, res, url) {
