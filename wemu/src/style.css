@@ -232,3 +232,26 @@ body.in-game .th-help { display: none !important; }
 .wemu-search-hint {
   margin-top: 10px; color: #6b7280; font-size: 12px; text-align: center;
 }
+
+/* ---------- on-screen keyboard (gamepad search) ---------- */
+.wemu-osk {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 4px;
+}
+.wemu-osk-key {
+  padding: 7px 0;
+  text-align: center;
+  background: #1a2029;
+  border: 1px solid #242b34;
+  border-radius: 4px;
+  color: #9ca3af;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.wemu-osk-key:hover { background: #232b36; }
+.wemu-osk-key.focus { background: #4c1d95; border-color: #a78bfa; color: #fff; }
+.wemu-osk-key.wide { grid-column: span 2; }
+

@@ -1,22 +1,35 @@
-// Game search overlay: keyboard-typing search over the current system's list.
-// Matches the raw name and its pinyin initials (拳皇97 -> qh97), so Chinese
-// libraries can be searched by initials ("mlst" -> 马里奥赛车...). Opened with
-// the Y button / F key from the gamelist; closed with Esc/B.
+// Game search overlay: searchable by raw name and pinyin initials
+// (拳皇97 -> qh97). Two input paths share one state:
+//  - physical keyboard types into the <input> directly
+//  - gamepad navigates an on-screen keyboard (dpad + A), so the couch-only
+//    player can search without a keyboard
+// Opened with X/Y/F from the gamelist; closed with B/Esc.
 import type { GameEntry } from '../types';
 import { ensurePinyin, initials } from '../util/pinyin';
 
 const MAX_RESULTS = 60;
 
+// on-screen keyboard rows (grid is 10 columns wide)
+const KEY_ROWS: string[][] = [
+  ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
+  ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
+  ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', '⌫'],
+  ['Z', 'X', 'C', 'V', 'B', 'N', 'M', '空格', '清空']
+];
+
 export class SearchPanel {
   private overlay: HTMLElement | null = null;
   private input: HTMLInputElement | null = null;
   private listEl: HTMLElement | null = null;
-  private hintEl: HTMLElement | null = null;
+  private keyCells: HTMLElement[][] = [];
   private games: GameEntry[] = [];
   private hay: string[] = [];       // lowercase name + initials, per game
-  private hayFor: GameEntry[] | null = null; // games array the index was built for
+  private hayFor: GameEntry[] | null = null;
   private resultIdx: number[] = []; // games indices currently listed
   private sel = 0;
+  private zone: 'keys' | 'results' = 'keys';
+  private keyRow = 1;
+  private keyCol = 0;
   private onPick: (gameIdx: number) => void = () => {};
 
   constructor(root: HTMLElement) {
@@ -27,23 +40,40 @@ export class SearchPanel {
 
     const input = document.createElement('input');
     input.className = 'wemu-search-input';
-    input.placeholder = '搜索游戏…（支持拼音首字母，如 kof、mlst）';
+    input.placeholder = '搜索…（拼音首字母，如 kof / mlst）';
     input.spellcheck = false;
+
+    const osk = document.createElement('div');
+    osk.className = 'wemu-osk';
+    const cells: HTMLElement[][] = [];
+    KEY_ROWS.forEach((row, r) => {
+      for (const k of row) {
+        if (k === '') continue;
+        const cell = document.createElement('div');
+        cell.className = 'wemu-osk-key' + (k === '空格' ? ' wide' : '');
+        cell.textContent = k;
+        cell.addEventListener('click', () => this.activateKey(k));
+        osk.appendChild(cell);
+        (cells[r] = cells[r] || []).push(cell);
+        cell.dataset.row = String(r);
+        cell.dataset.key = k;
+      }
+    });
 
     const listEl = document.createElement('div');
     listEl.className = 'wemu-search-results';
 
     const hintEl = document.createElement('div');
     hintEl.className = 'wemu-search-hint';
-    hintEl.textContent = '↑↓ 选择 · ⏎/A 运行 · Esc/B 关闭';
+    hintEl.textContent = 'A 确认 · B 关闭 · ↑↓ 键盘/结果切换 · 也可直接用键盘输入';
 
-    panel.append(input, listEl, hintEl);
+    panel.append(input, osk, listEl, hintEl);
     overlay.appendChild(panel);
     root.appendChild(overlay);
 
-    input.addEventListener('input', () => this.filter(input.value));
+    input.addEventListener('input', () => { this.query = input.value; this.filter(); });
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'ArrowDown') { e.preventDefault(); this.move(1); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); this.zone = 'results'; this.renderFocus(); }
       else if (e.key === 'ArrowUp') { e.preventDefault(); this.move(-1); }
       else if (e.key === 'Enter') { e.preventDefault(); this.pick(); }
       else if (e.key === 'Escape') { e.preventDefault(); this.close(); }
@@ -53,6 +83,7 @@ export class SearchPanel {
     this.input = input;
     this.listEl = listEl;
     this.hintEl = hintEl;
+    this.keyCells = cells.filter(Boolean) as HTMLElement[][];
   }
 
   isOpen() { return this.overlay !== null && this.overlay.style.display !== 'none'; }
@@ -62,12 +93,14 @@ export class SearchPanel {
     this.onPick = onPick;
     if (!this.overlay) return;
     this.overlay.style.display = '';
+    this.zone = 'keys';
+    this.keyRow = 1; this.keyCol = 0;
     if (this.input) {
       this.input.value = '';
-      // defer so the overlay is visible before focus steals the caret
       setTimeout(() => this.input?.focus(), 0);
     }
-    this.filter('');
+    this.query = '';
+    this.filter();
     // build the initials index in the background (one pinyin call per name;
     // ~1700 names is fast, but stay async so the panel paints immediately)
     if (this.hayFor !== games) {
@@ -85,10 +118,61 @@ export class SearchPanel {
 
   /** gamepad routing while the panel is open (keyboard goes to the input) */
   handle(btn: string) {
-    if (btn === 'up') this.move(-1);
-    else if (btn === 'down') this.move(1);
-    else if (btn === 'accept') this.pick();
-    else if (btn === 'cancel' || btn === 'menu' || btn === 'option' || btn === 'search') this.close();
+    if (btn === 'up') this.navVertical(-1);
+    else if (btn === 'down') this.navVertical(1);
+    else if (btn === 'left') this.navHorizontal(-1);
+    else if (btn === 'right') this.navHorizontal(1);
+    else if (btn === 'accept') this.activate();
+    else if (btn === 'cancel' || btn === 'menu' || btn === 'search') this.close();
+    else if (btn === 'option') { // Y = backspace shortcut on the keyboard
+      if (this.zone === 'keys') this.activateKey('⌫');
+    }
+  }
+
+  private query = '';
+
+  private navHorizontal(delta: number) {
+    if (this.zone === 'keys') {
+      const row = KEY_ROWS[this.keyRow] || [];
+      this.keyCol = Math.max(0, Math.min(row.length - 1, this.keyCol + delta));
+      this.renderFocus();
+    } else {
+      this.move(delta);
+    }
+  }
+
+  private navVertical(delta: number) {
+    if (this.zone === 'keys') {
+      const next = this.keyRow + delta;
+      if (next < 0) return;
+      if (next >= KEY_ROWS.length) {
+        if (this.resultIdx.length) { this.zone = 'results'; this.sel = 0; this.renderFocus(); }
+        return;
+      }
+      this.keyRow = next;
+      this.keyCol = Math.min(this.keyCol, Math.max(0, (KEY_ROWS[this.keyRow] || []).length - 1));
+      this.renderFocus();
+    } else {
+      this.move(delta);
+    }
+  }
+
+  private activate() {
+    if (this.zone === 'keys') {
+      const k = (KEY_ROWS[this.keyRow] || [])[this.keyCol];
+      if (k) this.activateKey(k);
+    } else {
+      this.pick();
+    }
+  }
+
+  private activateKey(k: string) {
+    if (k === '⌫') this.query = this.query.slice(0, -1);
+    else if (k === '空格') this.query += ' ';
+    else if (k === '清空') this.query = '';
+    else this.query += k.toLowerCase();
+    if (this.input) this.input.value = this.query;
+    this.filter();
   }
 
   private move(delta: number) {
@@ -104,9 +188,9 @@ export class SearchPanel {
     this.onPick(gi);
   }
 
-  private filter(raw: string) {
+  private filter() {
     if (!this.listEl) return;
-    const q = raw.trim().toLowerCase();
+    const q = this.query.trim().toLowerCase();
     this.resultIdx = [];
     if (!q) {
       // empty query: browse the first MAX_RESULTS entries
@@ -122,6 +206,7 @@ export class SearchPanel {
     }
     this.sel = 0;
     this.renderResults();
+    this.renderFocus();
   }
 
   private renderResults() {
@@ -161,6 +246,17 @@ export class SearchPanel {
       const top = selRow.offsetTop, h = selRow.offsetHeight;
       if (top < list.scrollTop) list.scrollTop = top;
       else if (top + h > list.scrollTop + list.clientHeight) list.scrollTop = top + h - list.clientHeight;
+    }
+  }
+
+  private renderFocus() {
+    for (const row of this.keyCells) {
+      for (const cell of row) {
+        const r = Number(cell.dataset.row);
+        const k = cell.dataset.key || '';
+        const col = (KEY_ROWS[r] || []).indexOf(k);
+        cell.classList.toggle('focus', this.zone === 'keys' && r === this.keyRow && col === this.keyCol);
+      }
     }
   }
 }

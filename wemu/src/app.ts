@@ -246,7 +246,7 @@ export class App {
       W: window.innerWidth,
       H: window.innerHeight,
       helpEntries: this.screen === 'gamelist'
-        ? ['↑↓ 选择', '←→ 翻页', '⏎/A 运行', 'Y 收藏', 'F 搜索', 'Esc/B 返回', 'F1 菜单']
+        ? ['↑↓ 选择', '←→ 翻页', '⏎/A 运行', 'Y 收藏', 'X/F 搜索', 'Esc/B 返回', 'F1 菜单']
         : ['← → 选择系统', '⏎/A 进入', 'F1 添加游戏'],
       infoTexts: this.infoTexts,
       gameCount: this.screen === 'gamelist' ? this.games.length : this.systems[this.sysIdx]?.gameCount

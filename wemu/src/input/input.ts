@@ -27,7 +27,7 @@ export const DEFAULT_BINDINGS: Bindings = {
     12: 'up', 13: 'down', 14: 'left', 15: 'right', // dpad
     0: 'accept',  // south (Xbox A) = accept
     1: 'cancel',  // east  (Xbox B) = back
-    2: 'menu',    // west  (Xbox X) = menu / import ROMs
+    2: 'search',  // west  (Xbox X) = search (gamelist)
     3: 'option',  // north  (Xbox Y) = options
     9: 'menu',    // start
     8: 'option'   // select/back
@@ -38,7 +38,7 @@ const REPEAT_DELAY = 420;  // ms before first repeat
 const REPEAT_RATE = 130;   // ms between repeats
 const POLL_MS = 12;
 
-const STORE_KEY = 'wemu-bindings-v2';
+const STORE_KEY = 'wemu-bindings-v3'; // v3: pad X repurposed to search
 const COMBO_KEY = 'wemu-combos-v1';
 
 export interface ComboConfig {
