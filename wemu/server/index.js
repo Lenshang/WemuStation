@@ -8,7 +8,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { SYSTEMS, getSystem } from './lib/systems.js';
 import { scanSystem } from './lib/library.js';
-import { putBlob, getBlob, listBlobs, deleteBlob } from './lib/store.js';
+import { putBlob, getBlob, listBlobs, deleteBlob, getMeta, setMeta } from './lib/store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -146,6 +146,57 @@ function safeName(name) {
 }
 
 // ---------- API ----------
+// favorites + recently played: persisted server-side (SQLite blobs, ns 'meta')
+// so they follow the user across devices. Favorite keys are "<sysId>/<fileName>".
+function readMetaJson(name, fallback) {
+  try {
+    const raw = getMeta(name);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writeMetaJson(name, value) {
+  setMeta(name, JSON.stringify(value));
+}
+
+async function readJsonBody(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+// scan the real systems a favorite/recent key list points into and return the
+// matching full game entries (with sysId attached for core selection)
+function gamesForKeys(keys) {
+  const bySys = new Map();
+  for (const key of keys) {
+    const sep = key.indexOf('/');
+    if (sep === -1) continue;
+    const sysId = key.slice(0, sep);
+    if (!bySys.has(sysId)) bySys.set(sysId, []);
+    bySys.get(sysId).push(key.slice(sep + 1));
+  }
+  const out = [];
+  for (const [sysId, fileNames] of bySys) {
+    const sys = getSystem(sysId);
+    if (!sys) continue;
+    const want = new Set(fileNames);
+    for (const g of scanSystem(ROMS, sys).games) {
+      if (want.has(g.fileName)) out.push({ ...g, sysId });
+    }
+  }
+  // stable order: follow the key list order
+  const byKey = new Map(out.map((g) => [g.sysId + '/' + g.fileName, g]));
+  // everything returned here is a favorite by definition
+  for (const g of byKey.values()) g.favorite = true;
+  return keys.map((k) => byKey.get(k)).filter(Boolean);
+}
+
 function apiSystems() {
   // systems without any scanned ROMs are hidden (ES-DE behavior)
   return SYSTEMS.map((s) => {
@@ -213,7 +264,53 @@ async function handleAPI(req, res, url) {
   if (req.method === 'GET' && gameMatch) {
     const sys = getSystem(gameMatch[1]);
     if (!sys) return sendJSON(res, 404, { error: 'unknown system' });
-    return sendJSON(res, 200, scanSystem(ROMS, sys));
+    const data = scanSystem(ROMS, sys);
+    const favs = new Set(readMetaJson('favorites.json', []));
+    if (favs.size) {
+      for (const g of data.games) {
+        if (favs.has(sys.id + '/' + g.fileName)) g.favorite = true;
+      }
+    }
+    return sendJSON(res, 200, data);
+  }
+  if (req.method === 'GET' && p === '/api/favorites') {
+    return sendJSON(res, 200, readMetaJson('favorites.json', []));
+  }
+  if (req.method === 'POST' && p === '/api/favorites/toggle') {
+    const body = await readJsonBody(req);
+    if (!body || typeof body.key !== 'string' || !body.key.includes('/')) {
+      return sendJSON(res, 400, { error: 'key required (<sysId>/<fileName>)' });
+    }
+    const favs = new Set(readMetaJson('favorites.json', []));
+    const had = favs.has(body.key);
+    if (had) favs.delete(body.key); else favs.add(body.key);
+    writeMetaJson('favorites.json', [...favs]);
+    return sendJSON(res, 200, { favorite: !had });
+  }
+  if (req.method === 'GET' && p === '/api/favorite-games') {
+    return sendJSON(res, 200, { games: gamesForKeys(readMetaJson('favorites.json', [])) });
+  }
+  if (req.method === 'GET' && p === '/api/recent-games') {
+    return sendJSON(res, 200, { games: readMetaJson('recent.json', []) });
+  }
+  if (req.method === 'POST' && p === '/api/recent-add') {
+    const body = await readJsonBody(req);
+    if (!body || typeof body.sysId !== 'string' || typeof body.fileName !== 'string' || !getSystem(body.sysId)) {
+      return sendJSON(res, 400, { error: 'sysId/fileName required' });
+    }
+    const entry = {
+      sysId: body.sysId,
+      fileName: body.fileName,
+      name: String(body.name || body.fileName),
+      image: String(body.image || ''),
+      video: String(body.video || ''),
+      url: String(body.url || ''),
+      ts: Date.now()
+    };
+    const list = readMetaJson('recent.json', []).filter((g) => !(g.sysId === entry.sysId && g.fileName === entry.fileName));
+    list.unshift(entry);
+    writeMetaJson('recent.json', list.slice(0, 50));
+    return sendJSON(res, 200, { ok: true });
   }
   // ---- server-side save/state/config storage (shared by all clients) ----
   // ns: 'save' (SRAM), 'state' (save states), 'cfg' (retroarch.cfg + userdata)

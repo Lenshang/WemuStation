@@ -56,7 +56,7 @@ export interface ThemeLayout {
 export type NavButton =
   | 'up' | 'down' | 'left' | 'right'
   | 'accept' | 'cancel' | 'menu' | 'option'
-  | 'search';
+  | 'search' | 'favorite';
 
 export interface SystemExtraInfo {
   infoTexts: Record<string, string>; // info1..infoN from systeminfo.xml

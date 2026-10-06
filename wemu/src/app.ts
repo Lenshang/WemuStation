@@ -101,6 +101,8 @@ export class App {
   infoTexts: Record<string, string> = {};
   private gamelistRefs: GamelistRefs | null = null;
   private searchPanel: SearchPanel | null = null;
+  favoriteGames: GameEntry[] = [];
+  recentGames: GameEntry[] = [];
   private player: PlayerHandle | null = null;
   private busy = false;
 
@@ -115,7 +117,7 @@ export class App {
       this.themeName = cfg.theme || this.themeName;
       this.themeVariant = cfg.variant || this.themeVariant;
       this.playerEngine = cfg.player === 'emulatorjs' ? 'emulatorjs' : 'retroarch';
-      this.systems = (await api.systems()).filter((s) => EJS_CORES[s.id] || RA_CORES[s.id]);
+      await this.loadSystems();
       if (!this.systems.length) throw new Error('没有可用的系统（ROM 目录为空？）');
       this.unhideSplashText();
       void this.probeRetroarchCores();
@@ -165,7 +167,7 @@ export class App {
       openSettings: () => this.openSettings(),
       openRAMainMenu: () => this.openRAMainMenu(),
       refreshLibrary: async () => {
-        this.systems = (await api.systems()).filter((s) => EJS_CORES[s.id] || RA_CORES[s.id]);
+        await this.loadSystems();
         await this.renderSystem('view-fade-in');
         this.toast('游戏库已刷新');
       },
@@ -190,6 +192,20 @@ export class App {
   }
   // cores with a built RetroArch wasm bundle (probed at startup)
   retroarchAvailable = new Set<string>();
+
+  /** real systems + virtual collections (recent / favorites) into one carousel */
+  private async loadSystems() {
+    const base = (await api.systems()).filter((s) => EJS_CORES[s.id] || RA_CORES[s.id]);
+    try {
+      this.favoriteGames = await api.favoriteGames();
+      this.recentGames = await api.recentGames();
+    } catch { /* keep previous lists on transient errors */ }
+    const virtual: SystemInfo[] = [
+      { id: 'recent', fullName: '最近游戏', shortName: '最近游戏', manufacturer: '', releaseYear: '', themeDir: 'auto-lastplayed', gameCount: this.recentGames.length },
+      { id: 'favorite', fullName: '收藏', shortName: '收藏', manufacturer: '', releaseYear: '', themeDir: 'auto-favorites', gameCount: this.favoriteGames.length }
+    ];
+    this.systems = [...virtual, ...base];
+  }
 
   private async probeRetroarchCores() {
     await Promise.all(Object.entries(RA_CORES).map(async ([, core]) => {
@@ -230,7 +246,7 @@ export class App {
       W: window.innerWidth,
       H: window.innerHeight,
       helpEntries: this.screen === 'gamelist'
-        ? ['↑↓ 选择', '←→ 翻页', '⏎/A 运行', 'Y/F 搜索', 'Esc/B 返回', 'F1 菜单']
+        ? ['↑↓ 选择', '←→ 翻页', '⏎/A 运行', 'Y 收藏', 'F 搜索', 'Esc/B 返回', 'F1 菜单']
         : ['← → 选择系统', '⏎/A 进入', 'F1 添加游戏'],
       infoTexts: this.infoTexts,
       gameCount: this.screen === 'gamelist' ? this.games.length : this.systems[this.sysIdx]?.gameCount
@@ -258,11 +274,24 @@ export class App {
   private async renderGamelist() {
     if (!this.layout) return;
     const sys = this.systems[this.sysIdx];
-    const data = await api.games(sys.id);
-    this.games = data.games;
+    // virtual collections read from the server-side favorites/recent stores
+    // (always re-fetched on entry — they may have changed on another device)
+    let games: GameEntry[];
+    if (sys.id === 'favorite') {
+      games = this.favoriteGames = await api.favoriteGames();
+      this.toast(this.favoriteGames.length ? '' : '还没有收藏，在游戏列表按 Y 收藏');
+    } else if (sys.id === 'recent') {
+      games = this.recentGames = await api.recentGames();
+      this.toast(this.recentGames.length ? '' : '还没有游戏记录，运行一局即会出现');
+    } else {
+      games = (await api.games(sys.id)).games;
+    }
+    this.games = games;
     this.gameIdx = 0;
     if (!this.games.length) {
-      this.toast(`「${sys.fullName}」还没有游戏，按 F1 导入 ROM`);
+      if (sys.id !== 'favorite' && sys.id !== 'recent') {
+        this.toast(`「${sys.fullName}」还没有游戏，按 F1 导入 ROM`);
+      }
       return;
     }
     this.screen = 'gamelist';
@@ -370,10 +399,9 @@ export class App {
           await this.renderSystem('view-fade-in');
         } else if (btn === 'search') {
           this.openSearch();
-        } else if (btn === 'option') {
-          // Y inside the gamelist = search (ES-DE convention); Start still
-          // opens the main menu
-          this.openSearch();
+        } else if (btn === 'favorite' || btn === 'option') {
+          // Y toggles favorite — ES-DE convention
+          this.toggleFavorite();
         } else if (btn === 'menu') {
           this.openMainMenu();
         }
@@ -418,18 +446,50 @@ export class App {
     });
   }
 
+  /** toggle favorite on the selected game (server-side, follows the user) */
+  private async toggleFavorite() {
+    const sys = this.systems[this.sysIdx];
+    const g = this.games[this.gameIdx];
+    if (!g) return;
+    const key = (g.sysId || sys.id) + '/' + g.fileName;
+    try {
+      const r = await api.toggleFavorite(key);
+      g.favorite = r.favorite;
+      this.toast(r.favorite ? '★ 已收藏' : '已取消收藏');
+      this.sounds.play(r.favorite ? 'select' : 'back');
+      if (sys.id === 'favorite' && !r.favorite) {
+        // unfavorite while inside the favorites collection: drop the entry
+        this.favoriteGames = this.favoriteGames.filter((x) => !(x.sysId === g.sysId && x.fileName === g.fileName));
+        this.games = this.favoriteGames;
+        this.gameIdx = Math.min(this.gameIdx, Math.max(0, this.games.length - 1));
+        if (this.games.length) {
+          await this.renderGamelist();
+        } else {
+          this.gamelistRefs?.root.remove();
+          this.gamelistRefs = null;
+          this.screen = 'system';
+          await this.renderSystem('view-fade-in');
+        }
+      }
+    } catch {
+      this.toast('收藏失败（服务器不可用？）');
+    }
+  }
+
   // ---------- game ----------
   private startGame() {
     const sys = this.systems[this.sysIdx];
     const game = this.games[this.gameIdx];
     if (!sys || !game) return;
-    const core = this.playerEngine === 'retroarch' ? RA_CORES[sys.id] : EJS_CORES[sys.id];
+    // favorites/recent entries carry their real system id
+    const coreId = game.sysId || sys.id;
+    const core = this.playerEngine === 'retroarch' ? RA_CORES[coreId] : EJS_CORES[coreId];
     if (!core) {
       this.toast(`暂不支持 ${sys.fullName}`);
       return;
     }
     if (this.playerEngine === 'retroarch' && !this.retroarchAvailable.has(core)) {
-      const ejs = EJS_CORES[sys.id];
+      const ejs = EJS_CORES[coreId];
       if (!ejs) {
         this.toast(`RetroArch 核心尚未构建，且 ${sys.fullName} 无 EmulatorJS 备选`);
         return;
@@ -441,6 +501,19 @@ export class App {
     this.screen = 'game';
     document.body.classList.add('in-game'); // hide help bar + gear button
     this.player = launchGame(this.root, sys, game, core, this.playerEngine, () => this.exitGame());
+    // record in the server-side "recently played" list (fire and forget)
+    void api.recentAdd({
+      sysId: coreId,
+      fileName: game.fileName,
+      name: game.name,
+      image: game.image,
+      video: game.video || '',
+      url: game.url
+    }).then(() => {
+      this.recentGames = this.recentGames.filter((g) => !(g.sysId === coreId && g.fileName === game.fileName));
+      this.recentGames.unshift({ ...game, sysId: coreId, ts: Date.now() } as GameEntry);
+      this.recentGames = this.recentGames.slice(0, 50);
+    }).catch(() => {});
     this.toast(this.playerEngine === 'retroarch'
       ? 'Select+Start 退出 · Select+X 呼出 RA 菜单'
       : 'Esc 退出游戏（手柄 Start+Select）');

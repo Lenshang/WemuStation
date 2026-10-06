@@ -10,7 +10,7 @@ export interface Bindings {
   pad: Record<number, NavButton>;   // gamepad button index -> action
 }
 
-export const ACTIONS: NavButton[] = ['up', 'down', 'left', 'right', 'accept', 'cancel', 'menu', 'option', 'search'];
+export const ACTIONS: NavButton[] = ['up', 'down', 'left', 'right', 'accept', 'cancel', 'menu', 'option', 'search', 'favorite'];
 
 export const DEFAULT_BINDINGS: Bindings = {
   keys: {
@@ -20,7 +20,8 @@ export const DEFAULT_BINDINGS: Bindings = {
     escape: 'cancel', backspace: 'cancel', z: 'cancel',
     f1: 'menu', tab: 'menu',
     f2: 'option',
-    f: 'search'
+    f: 'search',
+    c: 'favorite'
   },
   pad: {
     12: 'up', 13: 'down', 14: 'left', 15: 'right', // dpad

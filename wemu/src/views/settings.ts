@@ -8,7 +8,7 @@ import type { NavButton } from '../types';
 const ACTION_LABELS: Record<NavButton, string> = {
   up: '向上 ↑', down: '向下 ↓', left: '向左 ←', right: '向右 →',
   accept: '确定（进入/运行）', cancel: '返回', menu: '菜单 / 导入 ROM', option: '选项',
-  search: '搜索游戏（列表内）'
+  search: '搜索游戏（列表内）', favorite: '收藏游戏（列表内，ES-DE: Y）'
 };
 
 export function openSettingsPanel(root: HTMLElement, input: InputManager, onRAMenu?: () => void): () => void {
