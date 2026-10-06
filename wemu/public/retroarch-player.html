@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>WemuStation RetroArch Player</title>
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+    #canvas { width: 100%; height: 100%; display: block; }
+    #loading {
+      position: absolute; inset: 0; display: flex; flex-direction: column; gap: 12px;
+      align-items: center; justify-content: center; color: #9ca3af;
+      font-family: "Segoe UI", system-ui, sans-serif; font-size: 15px;
+      background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0f 70%);
+      z-index: 10; transition: opacity .4s;
+    }
+    #loading.hide { opacity: 0; pointer-events: none; }
+    .spin { width: 34px; height: 34px; border: 3px solid #374151; border-top-color: #a78bfa; border-radius: 50%; animation: sp 1s linear infinite; }
+    @keyframes sp { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
+  <div id="loading"><div class="spin"></div><div id="loading-text">正在启动 RetroArch…</div></div>
+  <script type="module">
+    // RetroArch wasm player shell.
+    // - Loads a statically-linked RetroArch build (/retroarch/<core>_libretro.js)
+    // - Writes the ROM + a preconfigured retroarch.cfg into the virtual FS
+    // - Launches content directly via callMain(['-v', rom, '-c', cfg])
+    // - F1 (default input_menu_toggle) opens the full RetroArch menu (shaders,
+    //   overlays, remaps...) inside the game
+    // - Persists saves/states to IndexedDB (same-origin store shared with the
+    //   frontend) on an interval and on pagehide
+      const q = new URLSearchParams(location.search);
+      const core = q.get('core') || 'fceumm';
+      const gameUrl = q.get('game');
+      const gameName = q.get('name') || 'game';
+      const menuMode = q.get('mode') === 'menu'; // launch straight into the RA main menu (settings)
+
+    // ---- gamepad index normalization (runs before the RA module loads) ----
+    // Chromium assigns the pad a MONOTONIC index that increments on every
+    // reconnection (USB re-enumeration, sleep/wake, receiver hiccups), and
+    // RA 1.22's rwebpad driver binds each pad to the RA port matching that
+    // index — so after a few reconnects the pad drifts to port 2, 3, 4…
+    // where menus, hotkeys and games (all port 1) never see it.
+    //
+    // Fix: present EXACTLY ONE pad, always at index 0, to everything running
+    // in this frame:
+    //   - navigator.getGamepads() returns a live clone at index 0
+    //   - native connect/disconnect events (which carry the raw index) are
+    //     swallowed and re-emitted for the clone
+    //   - the rwebpad driver only marks a pad "live" from a real connect
+    //     event, and only starts listening after its own init — so connects
+    //     are re-announced until RA's own log confirms the autoconfig
+    (function normalizeGamepads() {
+      const realGet = navigator.getGamepads && navigator.getGamepads.bind(navigator);
+      if (!realGet) return;
+      let mainIdx = null;        // browser index of the (first) physical pad
+      let announced = false;     // a connect was (or may have been) delivered
+      let announcedToRA = false; // RA's log confirmed the autoconfig
+      let dispatching = false;   // inside our own synthetic dispatch — pass it
+      const clone = {            // stable index-0 view fed to RA
+        index: 0, id: '', connected: false, mapping: 'standard',
+        axes: [0, 0, 0, 0], timestamp: 0, vibrationActuator: null,
+        buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 }))
+      };
+      function sync() {
+        let pads;
+        try { pads = realGet(); } catch (e) { return; }
+        if (mainIdx === null || !pads[mainIdx]) {
+          mainIdx = null;
+          for (let i = 0; i < pads.length; i++) if (pads[i]) { mainIdx = i; break; }
+          if (mainIdx === null) { clone.connected = false; return; }
+        }
+        const p = pads[mainIdx];
+        clone.connected = true;
+        clone.id = p.id;
+        clone.timestamp = p.timestamp;
+        for (let b = 0; b < clone.buttons.length; b++) {
+          const src = b < p.buttons.length ? p.buttons[b] : null;
+          clone.buttons[b].pressed = !!(src && src.pressed);
+          clone.buttons[b].value = src ? src.value : 0;
+        }
+        for (let a = 0; a < clone.axes.length; a++)
+          clone.axes[a] = a < p.axes.length ? p.axes[a] : 0;
+      }
+      function announce(type) {
+        // plain Event + .gamepad (GamepadEvent's constructor demands a real
+        // Gamepad instance; listeners only read .gamepad). The dispatching
+        // guard lets our own swallow-listener pass synthetic events through.
+        dispatching = true;
+        try {
+          const ev = new Event(type);
+          ev.gamepad = clone;
+          window.dispatchEvent(ev);
+        } finally { dispatching = false; }
+      }
+      navigator.getGamepads = function () {
+        sync();
+        return [clone, null, null, null];
+      };
+      // native events carry the raw browser index — swallow and re-emit the
+      // normalized clone (registered first, so RA's later listeners never
+      // see the originals)
+      window.addEventListener('gamepadconnected', (e) => {
+        if (dispatching) return;
+        e.stopImmediatePropagation();
+        sync();
+        if (clone.connected && !announced) { announced = true; announce('gamepadconnected'); }
+      }, true);
+      window.addEventListener('gamepaddisconnected', (e) => {
+        if (dispatching) return;
+        e.stopImmediatePropagation();
+        sync();
+        if (!clone.connected && announced) {
+          announced = false;
+          announcedToRA = false;
+          announce('gamepaddisconnected');
+        }
+      }, true);
+      // RA registers its gamepad listeners late (input driver init inside
+      // callMain), so announcements made before that are LOST — retry until
+      // RA's own log confirms the autoconfig, then stop (no duplicate toasts)
+      const raHeard = () => {
+        const logs = window.__ralocal;
+        if (!logs) return false;
+        for (let i = logs.length - 1, seen = 0; i >= 0 && seen < 80; i--, seen++)
+          if (/Autoconf|configured in port/i.test(logs[i])) return true;
+        return false;
+      };
+      let retries = 0;
+      setInterval(() => {
+        sync();
+        if (clone.connected && !announced) { announced = true; announce('gamepadconnected'); }
+        else if (!clone.connected && announced) {
+          announced = false;
+          announcedToRA = false;
+          announce('gamepaddisconnected');
+        }
+        if (!clone.connected) return;
+        if (announcedToRA || raHeard()) { announcedToRA = true; return; }
+        if (window.__raModule && retries < 100) {
+          retries++;
+          announce('gamepadconnected');
+        }
+      }, 300);
+    })();
+
+    const HOME = '/home/web_user/retroarch';
+    const CFG_PATH = HOME + '/userdata/retroarch.cfg';
+    const SAVES = HOME + '/saves';
+    const STATES = HOME + '/states';
+    const ROM_DIR = HOME + '/downloads';
+    // ---- server-side storage sync (SQLite on the host, shared by all clients) ----
+    const NS = { saves: 'save', states: 'state', userdata: 'cfg' };
+    const CFG_STORE = 'wemu-ra-cfg';
+    const cfgSigKey = function (p, hash) { return 'wemu-cfg-sig:' + p + ':' + hash; };
+    window.__bootCfgKey = null; // signature of cfg as pulled at boot
+    const serverList = async (ns) => {
+      const r = await fetch('/api/storage/list?ns=' + ns, { cache: 'no-cache' });
+      return r.ok ? r.json() : [];
+    };
+    const serverGet = async (ns, p) => {
+      const r = await fetch('/api/storage/get?ns=' + ns + '&path=' + encodeURIComponent(p), { cache: 'no-cache' });
+      if (!r.ok) return null;
+      return new Uint8Array(await r.arrayBuffer());
+    };
+    const serverPut = async (ns, p, data) => {
+      try {
+        // Blob() avoids fetch stringifying array-likes into "1,2,3" text
+        const body = data instanceof Uint8Array ? new Blob([data]) : data;
+        await fetch('/api/storage/put?ns=' + ns + '&path=' + encodeURIComponent(p), {
+          method: 'POST', body
+        });
+      } catch (e) { console.warn('server put failed', p, e); }
+    };
+
+
+    const loadingText = document.getElementById('loading-text');
+    const report = (type, message) => parent.postMessage({ type, message }, '*');
+
+    try {
+      // fetch ROM (skipped in settings/menu mode)
+      let romData = null;
+      let romName = '';
+      if (!menuMode) {
+        loadingText.textContent = '正在下载游戏…';
+        const romResp = await fetch(gameUrl);
+        if (!romResp.ok) throw new Error('ROM 下载失败: HTTP ' + romResp.status);
+        romData = new Uint8Array(await romResp.arrayBuffer());
+        romName = decodeURIComponent(gameUrl.split('/').pop()).replace(/[^\w.\- ]+/g, '_');
+      }
+
+      // pull saves/states/config from the SERVER (shared across all clients)
+      loadingText.textContent = '正在从服务器恢复存档…';
+      const serverFiles = {};
+      for (const dir of Object.keys(NS)) {
+        try {
+          const listing = await serverList(NS[dir]);
+          for (const item of listing) {
+            const data = await serverGet(NS[dir], item.path);
+            // canonical mapping: cfg ns keeps its server path verbatim
+            // (/retroarch.cfg, /userdata/retroarch.cfg, ...) because the cfg
+            // paths already include their subdir; save/state get the dir prefix
+            serverFiles[dir === 'cfg'
+              ? HOME + item.path.replace(/^\/userdata/, '/userdata')
+              : HOME + '/' + dir + item.path] = data;
+          }
+        } catch (e) { console.warn('server list failed', dir, e); }
+      }
+
+      // BIOS files: arcade cores need e.g. neogeo.zip / pgm.zip inside the
+      // system dir and PSX needs a scph*.bin. The library's bios/ folder
+      // (served under /roms/bios/) already has them — pull whichever exist.
+      // Optional entries simply 404 and are skipped.
+      const biosFiles = {};
+      if (!menuMode) {
+        const biosCandidates = ['neogeo.zip', 'pgm.zip', 'pgm2.zip', 'neocdz.zip',
+          'scph1000.bin', 'scph1001.bin', 'scph101.bin', 'scph5501.bin',
+          'scph7001.bin', 'scph7502.bin', 'scph9002.bin',
+          'gb_bios.bin', 'gbc_bios.bin', 'gba_bios.bin'];
+        loadingText.textContent = '正在加载 BIOS…';
+        await Promise.all(biosCandidates.map(async (b) => {
+          try {
+            const r = await fetch('/roms/bios/' + encodeURIComponent(b), { cache: 'no-cache' });
+            if (r.ok) biosFiles[b] = new Uint8Array(await r.arrayBuffer());
+          } catch { /* optional */ }
+        }));
+      }
+
+      loadingText.textContent = '正在加载 RetroArch 核心…';
+      const factory = (await import(`/retroarch/${core}_libretro.js`)).default;
+
+      const RA_CFG = [
+        'menu_driver = "ozone"',
+        'user_language = "12"',
+        'savefile_directory = "' + SAVES + '"',
+        'savestate_directory = "' + STATES + '"',
+        'screenshot_directory = "' + HOME + '/screenshots"',
+        'system_directory = "' + HOME + '/system"',
+        'assets_directory = "' + HOME + '/assets"',
+        'history_list_enable = "false"',
+        'config_save_on_exit = "true"',
+        'quit_press_twice = "false"',
+        'ui_menubar_enable = "false"',
+        'video_smooth = "true"',
+        'video_scale = "4"',
+        'audio_volume = "0.000000"',
+        'input_menu_toggle = "f1"',
+        'input_exit_emulator = "nul"',
+        'autoload_state = "false"',
+        'apply_cheats_after_load = "false"',
+        'fps_show = "false"'
+      ].join('\n') + '\n';
+
+      let Module;
+      const args = menuMode
+        ? ['-v', '--menu', '-c', CFG_PATH]
+        : ['-v', ROM_DIR + '/' + romName, '-c', CFG_PATH];
+      if (menuMode) loadingText.textContent = '正在打开 RetroArch 设置…';
+      // forward RetroArch console output to the parent for diagnostics
+      const logs = [];
+      const pushLog = (t) => { logs.push(t); if (logs.length > 200) logs.shift(); window.__ralocal = logs; try { parent.postMessage({ type: 'ra-log', line: t }, '*'); } catch {} };
+
+      // push saves/states/config to the SERVER (shared across clients);
+      // config changes propagate to every device on the next game launch
+      const persistFiles = async () => {
+        if (!Module || !Module.FS) return;
+        // [virtual dir, server namespace, server-path prefix]
+        const dirs = [
+          [SAVES, NS.saves, ''],
+          [STATES, NS.states, ''],
+          [HOME + '/userdata', NS.userdata, '']
+        ];
+        for (const [dir, ns, prefix] of dirs) {
+          const walk = async (d) => {
+            let entries = [];
+            try { entries = Module.FS.readdir(d); } catch { return; }
+            for (const f of entries) {
+              if (f === '.' || f === '..') continue;
+              const p = d + '/' + f;
+              let st;
+              try { st = Module.FS.stat(p); } catch { continue; }
+              if (Module.FS.isDir(st.mode)) {
+                await walk(p);
+              } else if (Module.FS.isFile(st.mode)) {
+                try {
+                  const data = Module.FS.readFile(p);
+                  // collapse any historical /userdata/userdata/... nesting
+                  let rel = p.slice(dir.length);
+                  while (rel.indexOf('/' + NS.userdata + '/') === 0 && ns === NS.userdata) {
+                    rel = rel.slice(('/' + NS.userdata).length);
+                  }
+                  // cfg: skip push while content is unchanged since boot — a
+                  // freshly-written preset cfg must never clobber the newer
+                  // server copy that other devices may have saved
+                  if (ns === NS.userdata && p === CFG_PATH && window.__bootCfgKey) {
+                    let h = 0;
+                    for (let bi = 0; bi < data.length; bi++) { h = (h * 31 + data[bi]) | 0; }
+                    if (window.__bootCfgKey === cfgSigKey(p, h)) continue;
+                  }
+                  const serverPath = prefix + rel;
+                  await serverPut(ns, serverPath, data);
+                } catch { /* ignore */ }
+              }
+            }
+          };
+          await walk(dir);
+        }
+      };
+      window.addEventListener('pagehide', () => {
+        try { Module?.callMain && Module._cmd_savefiles?.(); } catch {}
+        // fire-and-forget is unreliable while the page is being torn down;
+        // also notify the shell via postMessage (handled in 'ra-exiting')
+        persistFiles().then(() => parent.postMessage({ type: 'ra-persisted' }, '*'));
+      });
+      // explicit sync hook the parent can await before destroying the iframe
+      window.addEventListener('message', (e) => {
+        if (e.source !== parent) return;
+        const d = e.data || {};
+        if (d.type === 'ra-persist-now') {
+          try { Module?._cmd_savefiles?.(); } catch {}
+          persistFiles().then(() => parent.postMessage({ type: 'ra-persisted' }, '*'));
+        }
+      });
+      setInterval(() => { if (Module?.FS) persistFiles(); }, 30000);
+
+      Module = await factory({
+        canvas: document.getElementById('canvas'),
+        arguments: args,
+        // quitting from the RetroArch menu tears the runtime down; surface
+        // that to the shell as an exit request
+        onExit: function () { parent.postMessage({ type: 'ejs-esc' }, '*'); },
+        onAbort: function () { parent.postMessage({ type: 'ejs-esc' }, '*'); },
+        noInitialRun: true, // we callMain explicitly below; otherwise main() runs
+                            // twice and RetroArch aborts on a duplicate main loop        print: (t) => { console.log('[ra]', t); pushLog(t); },
+        printErr: (t) => { console.warn('[ra]', t); pushLog(t); },
+        preRun: [(m) => {
+          const FS = m.FS;
+          for (const d of [HOME, HOME + '/userdata', SAVES, STATES, ROM_DIR, HOME + '/screenshots', HOME + '/system'])
+            FS.mkdirTree(d);
+          FS.writeFile(CFG_PATH, RA_CFG);
+          if (romData) FS.writeFile(ROM_DIR + '/' + romName, romData);
+          // server-pulled files override the preset config: the shared
+          // retroarch.cfg follows the user across every client device.
+          // First-ever run (nothing on the server) uses the preset defaults.
+          for (const [p, data] of Object.entries(serverFiles)) {
+            try {
+              FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
+              FS.writeFile(p, data);
+            } catch { /* ignore */ }
+          }
+          // BIOS files into the system dir (neogeo.zip for FBNeo/MAME,
+          // scph*.bin for PSX, gb/gbc/gba boot ROMs — all optional)
+          for (const [b, data] of Object.entries(biosFiles)) {
+            try { FS.writeFile(HOME + '/system/' + b, data); } catch { /* ignore */ }
+          }
+          // snapshot the pulled cfg signature so persistFiles can tell a
+          // boot-time cfg (skip push) from one RA actually rewrote (push)
+          try {
+            var bootCfg = FS.readFile(CFG_PATH);
+            var hh = 0;
+            for (var bi = 0; bi < bootCfg.length; bi++) { hh = (hh * 31 + bootCfg[bi]) | 0; }
+            window.__bootCfgKey = cfgSigKey(CFG_PATH, hh);
+          } catch { /* ignore */ }
+          // make sure the RA-native gamepad hotkey combo exists so the menu
+          // can always be summoned with the gamepad itself (Select+X by
+          // default; rebindable in the RA menu → Controls, and it follows
+          // the button numbering the user configures there)
+          try {
+            let txt = FS.readFile(CFG_PATH, { encoding: 'utf8' });
+            const ensure = (key, val) => {
+              const re = new RegExp(key + ' = "([^"]*)"');
+              const m = re.exec(txt);
+              // overwrite only when missing or explicitly disabled ("nul");
+              // user-configured bindings are preserved
+              if (!m || m[1] === 'nul') {
+                if (m) txt = txt.replace(re, key + ' = "' + val + '"');
+                else txt += '\n' + key + ' = "' + val + '"';
+              }
+            };
+            // overwrite unconditionally: hotkey combo + pad pin are
+            // infrastructure, not user preferences (users rebind gameplay
+            // buttons via the menu, which lands as separate port-1 keys)
+            const forceSet = (key, val) => {
+              const re = new RegExp(key + ' = "[^"]*"');
+              if (re.test(txt)) txt = txt.replace(re, key + ' = "' + val + '"');
+              else txt += '\n' + key + ' = "' + val + '"';
+            };
+            // gamepad hotkey: hold Select(8) + press X(2) toggles the menu.
+            // hotkey enable is REQUIRED for the combo to work, so set both.
+            forceSet('input_enable_hotkey_btn', '8');   // Select = hotkey enable
+            forceSet('input_menu_toggle_btn', '2');     // X = menu toggle
+            // the normalization shim rewrites the pad to browser index 0, so
+            // RA's autoconfig always lands it on port 1. Force 0 here so a
+            // stale pin pulled from the server cfg can never strand the pad
+            // on a higher port
+            forceSet('input_player1_joypad_index', '0');
+            // degenerate pulled cfg (<1KB, e.g. a partial write): fall back
+            // to the full preset so RA always boots from a complete config
+            var effective = txt.length < 1024 ? RA_CFG + '\n' + txt : txt;
+            FS.writeFile(CFG_PATH, effective);
+            // required paths (older shared cfgs may lack them; without
+            // assets_directory OZONE cannot find its theme assets and RA
+            // silently falls back to RGUI)
+            ensure('assets_directory', HOME + '/assets');
+            ensure('savefile_directory', SAVES);
+            ensure('savestate_directory', STATES);
+            ensure('system_directory', HOME + '/system');
+            FS.writeFile(CFG_PATH, txt);
+          } catch { /* ignore */ }
+        }]
+      });
+
+      // factory promise resolves once the runtime is ready
+      window.__raModule = Module;
+      // preload bundled shaders + menu assets (ozone/rgui/glui) into the FS
+      const writeFileTree = (buf, p) => {
+        Module.FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
+        Module.FS.writeFile(p, buf);
+      };
+      try {
+        const man = await (await fetch('/retroarch/shaders/manifest.json', { cache: 'no-cache' })).json();
+        for (const f of man) {
+          try {
+            const buf = new Uint8Array(await (await fetch('/retroarch/shaders/' + f, { cache: 'no-cache' })).arrayBuffer());
+            writeFileTree(buf, HOME + '/system/shaders/' + f);
+          } catch { /* skip missing shader */ }
+        }
+      } catch { /* no shaders bundled */ }
+      try {
+        loadingText.textContent = '正在加载菜单素材…';
+        // cache-bust: stale cached packs (missing CJK fonts) caused "???" menus
+        const pack = await (await fetch('/retroarch/assets/assets.pack.json?v=' + Date.now(), { cache: 'no-cache' })).json();
+        const HOME_PREFIX = HOME + '/assets/';
+        for (const [rel, b64] of Object.entries(pack)) {
+          const bin = atob(b64);
+          const buf = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+          writeFileTree(buf, HOME_PREFIX + rel);
+        }
+      } catch (e) { console.warn('assets pack load failed', e); }
+      Module.callMain(args);
+      document.getElementById('loading').classList.add('hide');
+      report('ejs-start');
+      report('ra-ready');
+
+      // expose minimal controls to parent via messages
+      window.addEventListener('message', (e) => {
+        if (e.source !== parent) return;
+        const d = e.data || {};
+        if (d.type === 'ra-command') {
+          try {
+            if (d.cmd === 'toggle-menu') Module._cmd_toggle_menu?.();
+            else if (d.cmd === 'save-state') Module._cmd_save_state?.();
+            else if (d.cmd === 'load-state') Module._cmd_load_state?.();
+            else if (d.cmd === 'save-files') { Module._cmd_savefiles?.(); persistFiles(); }
+          } catch (err) { console.warn(err); }
+        }
+      });
+      document.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape') report('ejs-esc');
+      });
+      window.addEventListener('error', (ev) => report('ejs-error', String(ev.message || 'error')));
+    } catch (err) {
+      console.error(err);
+      loadingText.textContent = '启动失败：' + (err?.message || err);
+      loadingText.style.color = '#f87171';
+      report('ejs-error', String(err?.message || err));
+    }
+  </script>
+</body>
+</html>

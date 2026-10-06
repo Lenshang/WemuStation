@@ -1,0 +1,21 @@
+# WemuStation 服务器部署示例
+# 用法：改镜像里的用户名为你的 GitHub 用户名，然后 docker compose up -d
+services:
+  wemustation:
+    image: ghcr.io/YOUR_GITHUB_USERNAME/wemustation:latest
+    container_name: wemustation
+    ports:
+      - "4464:4464"     # Web 界面（HTTP）
+      # - "4465:4465"   # HTTPS（挂载 certs 后自动启用；局域网手柄需要）
+    environment:
+      PORT: "4464"
+      ROM_DIR: "/app/roms"
+      DATA_DIR: "/app/data"
+    volumes:
+      - ./roms:/app/roms          # 游戏库（R36S/ES-DE 目录结构，含 bios/ 子目录）
+      - ./data:/app/data          # 存档/即时存档/RA 配置（SQLite）
+      # 可选：持久化主题/引擎等设置（前端设置界面会写入该文件）
+      # - ./config.json:/app/server/config.json
+      # 可选：HTTPS 证书（npm run gen-cert 生成；局域网手柄联机需要）
+      # - ./certs:/app/certs
+    restart: unless-stopped

@@ -1,0 +1,20 @@
+# 构建上下文里排除一切与镜像无关的内容
+build-tools
+RetroArch-master
+emulationstation-de-master
+*.7z
+*.zst
+wemu/node_modules
+wemu/dist
+wemu/data
+wemu/roms
+wemu/certs
+wemu/server/config.json
+wemu/emulator/*.log
+**/.git
+**/.github
+*.log
+.env
+Dockerfile
+docker-compose.yml
+README.md

@@ -1,0 +1,31 @@
+# ---- 本机构建环境（体积巨大，不进仓库；需要时见 build-tools/README）----
+/build-tools/
+/RetroArch-master/
+/emulationstation-de-master/
+*.7z
+*.zst
+
+# ---- node ----
+node_modules/
+wemu/node_modules/
+
+# ---- 前端构建产物（CI / Docker 构建时重新生成）----
+wemu/dist/
+
+# ---- 运行时数据：ROM 库、存档数据库、HTTPS 证书（部署时以卷挂载）----
+wemu/data/
+wemu/roms/
+wemu/certs/
+
+# EmulatorJS 换成发行版下载时再排除
+# wemu/emulator/
+
+# ---- 日志与临时文件 ----
+*.log
+wemu/emulator/*.log
+
+# ---- OS / 编辑器 ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
