@@ -119,8 +119,30 @@ function scanDir(dir, dirName, sysDef) {
       try { st = fs.statSync(full); } catch { continue; }
 
       const name = meta.name || cleanName(ent.name);
-      const img = pickMedia([meta.image, meta.screenshot, meta.screentitle], gamelistDir);
-      const screenshot = pickMedia([meta.screenshot, meta.image], gamelistDir);
+      let img = pickMedia([meta.image, meta.screenshot, meta.screentitle], gamelistDir);
+      let screenshot = pickMedia([meta.screenshot, meta.image], gamelistDir);
+      let marquee = pickMedia([meta.marquee], gamelistDir);
+      let video = pickMedia([meta.video], gamelistDir);
+
+      // Pegasus convention auto-lookup: many packs store assets under
+      // media/<game name>/ WITHOUT referencing them in the metadata file.
+      // Prefer files verified to exist here (explicit references may carry
+      // case mismatches that break on case-sensitive Linux filesystems).
+      let convFiles;
+      try { convFiles = fs.readdirSync(path.join(dir, 'media', name)); } catch { convFiles = null; }
+      if (convFiles) {
+        const byBase = new Map();
+        for (const f of convFiles) byBase.set(f.toLowerCase().replace(/\.[^.]+$/, ''), f);
+        const convURL = (f) => '/roms/' + dirName + '/media/' + encodeURIComponent(name) + '/' + encodeURIComponent(f);
+        const pickConv = (bases) => {
+          for (const b of bases) { const f = byBase.get(b); if (f) return convURL(f); }
+          return '';
+        };
+        img = pickConv(['boxfront', 'box_front', 'boxart', 'image']) || img;
+        screenshot = pickConv(['screenshot', 'snap', 'title']) || screenshot;
+        marquee = pickConv(['logo', 'marquee']) || marquee;
+        video = pickConv(['video']) || video;
+      }
 
       result.games.push({
         fileName: path.relative(dir, full).split(path.sep).join('/'),
@@ -128,7 +150,8 @@ function scanDir(dir, dirName, sysDef) {
         desc: meta.desc || '',
         image: img,
         screenshot,
-        marquee: pickMedia([meta.marquee], gamelistDir),
+        marquee,
+        video,
         releasedate: fmtDate(meta.releasedate),
         developer: meta.developer || '',
         publisher: meta.publisher || '',

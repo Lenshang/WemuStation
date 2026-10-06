@@ -38,8 +38,10 @@ export async function renderGamelistView(
   const frag = await renderStaticElements('gamelist', ctx, LIVE);
   view.appendChild(frag);
 
-  // --- media (gameImage) ---
-  const mediaEl = layout.views['gamelist']?.['gameImage'] || layout.views['gamelist']?.['gameVideo'];
+  // --- media (gameVideo preferred for position, gameImage as fallback) ---
+  const imgEl = layout.views['gamelist']?.['gameImage'];
+  const vidEl = layout.views['gamelist']?.['gameVideo'];
+  const mediaEl = vidEl || imgEl;
   const mediaBox = document.createElement('div');
   mediaBox.className = 'th-gameimage';
   if (mediaEl) {
@@ -60,7 +62,16 @@ export async function renderGamelistView(
     else mediaBox.style.zIndex = '30';
     const img = document.createElement('img');
     img.draggable = false;
+    img.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block';
     mediaBox.appendChild(img);
+    const vid = document.createElement('video');
+    vid.muted = true;
+    vid.loop = true;
+    vid.autoplay = true;
+    vid.setAttribute('playsinline', '');
+    vid.draggable = false;
+    vid.style.cssText = 'width:100%;height:100%;object-fit:contain;display:none;background:#000';
+    mediaBox.appendChild(vid);
     view.appendChild(mediaBox);
   }
 
@@ -81,9 +92,10 @@ export async function renderGamelistView(
     updateSelection(idx: number) {
       // textlist selector
       list.update(idx);
-      // media
+      // media: video preview when available, cover image otherwise
       const g = games[idx];
       const img = mediaBox.querySelector('img') as HTMLImageElement | null;
+      const vid = mediaBox.querySelector('video') as HTMLVideoElement | null;
       if (img) {
         if (g?.image) {
           img.src = g.image;
@@ -92,6 +104,24 @@ export async function renderGamelistView(
         } else {
           img.removeAttribute('src');
           img.style.display = 'none';
+        }
+      }
+      if (vid) {
+        if (g?.video) {
+          const full = new URL(g.video, location.origin).href;
+          if (vid.src !== full) vid.src = g.video;
+          vid.style.display = '';
+          if (img) img.style.display = 'none';
+          vid.play().catch(() => { /* autoplay blocked — image stays hidden */ });
+          vid.onerror = () => {
+            vid.style.display = 'none';
+            if (g.image && img) { img.src = g.image; img.style.display = ''; }
+          };
+        } else {
+          vid.pause();
+          vid.removeAttribute('src');
+          vid.load();
+          vid.style.display = 'none';
         }
       }
       // metadata texts / description
