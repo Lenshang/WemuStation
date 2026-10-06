@@ -11,9 +11,9 @@
 
 ## 支持平台
 
-NES · SNES · Mega Drive · PC Engine · GBA · GB · GBC · Game Gear · PS1 ·
-街机（FBNeo / Neo Geo / CPS1 / CPS2 / CPS3 / MAME 2003+）·
-WonderSwan / Color · Neo Geo Pocket / Color · Virtual Boy · Game & Watch
+NES · SNES · Mega Drive · PC Engine · GBA · GB · GBC · Game Gear · PS1 · 3DO ·
+街机（FBNeo / Neo Geo / CPS1 / CPS2 / CPS3 / MAME 2003+）· DOS（DOSBox Pure）·
+Atari 2600 / 5200 / 7800 · WonderSwan / Color · Neo Geo Pocket / Color · Virtual Boy · Game & Watch
 
 ## Docker 部署（推荐）
 

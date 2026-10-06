@@ -214,15 +214,23 @@
       // Optional entries simply 404 and are skipped.
       const biosFiles = {};
       if (!menuMode) {
+        // entries support "srcName>destName" when the core expects a
+        // different file name than the bios folder provides
         const biosCandidates = ['neogeo.zip', 'pgm.zip', 'pgm2.zip', 'neocdz.zip',
           'scph1000.bin', 'scph1001.bin', 'scph101.bin', 'scph5501.bin',
           'scph7001.bin', 'scph7502.bin', 'scph9002.bin',
-          'gb_bios.bin', 'gbc_bios.bin', 'gba_bios.bin'];
+          'gb_bios.bin', 'gbc_bios.bin', 'gba_bios.bin',
+          '5200.rom', '5200a.rom', 'ATARIXL.ROM', 'ATARIOSA.ROM',
+          'ATARIOSB.ROM', 'ATARIBAS.ROM',
+          '7800 BIOS (U).rom>7800.bin', '7800 BIOS (E).rom>7800.bin', '7800.bin'];
         loadingText.textContent = '正在加载 BIOS…';
-        await Promise.all(biosCandidates.map(async (b) => {
+        await Promise.all(biosCandidates.map(async (entry) => {
+          const sep = entry.indexOf('>');
+          const src = sep === -1 ? entry : entry.slice(0, sep);
+          const dest = sep === -1 ? entry : entry.slice(sep + 1);
           try {
-            const r = await fetch('/roms/bios/' + encodeURIComponent(b), { cache: 'no-cache' });
-            if (r.ok) biosFiles[b] = new Uint8Array(await r.arrayBuffer());
+            const r = await fetch('/roms/bios/' + encodeURIComponent(src), { cache: 'no-cache' });
+            if (r.ok) biosFiles[dest] = new Uint8Array(await r.arrayBuffer());
           } catch { /* optional */ }
         }));
       }

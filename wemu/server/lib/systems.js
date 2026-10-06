@@ -235,6 +235,46 @@ export const SYSTEMS = [
     releaseYear: '1993',
     themeDir: '3do',
     extensions: ['iso', 'chd', 'cue', 'zip']
+  },
+  {
+    id: 'dos',
+    fullName: 'DOS (DOSBox Pure)',
+    shortName: 'DOS',
+    manufacturer: 'IBM PC Compatible',
+    releaseYear: '1981',
+    themeDir: 'dos',
+    aliases: ['dosbox', 'msdos'],
+    extensions: ['zip', 'exe', 'com']
+  },
+  {
+    id: 'atari2600',
+    fullName: 'Atari 2600',
+    shortName: 'Atari 2600',
+    manufacturer: 'Atari',
+    releaseYear: '1977',
+    themeDir: 'atari2600',
+    aliases: ['a2600', 'atari'],
+    extensions: ['a26', '7z', 'zip', 'bin']
+  },
+  {
+    id: 'atari5200',
+    fullName: 'Atari 5200',
+    shortName: 'Atari 5200',
+    manufacturer: 'Atari',
+    releaseYear: '1982',
+    themeDir: 'atari5200',
+    aliases: ['a5200'],
+    extensions: ['a52', '7z', 'zip', 'bin']
+  },
+  {
+    id: 'atari7800',
+    fullName: 'Atari 7800 ProSystem',
+    shortName: 'Atari 7800',
+    manufacturer: 'Atari',
+    releaseYear: '1986',
+    themeDir: 'atari7800',
+    aliases: ['a7800'],
+    extensions: ['a78', '7z', 'zip', 'bin']
   }
 ];
 
