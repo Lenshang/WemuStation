@@ -14,10 +14,8 @@ RUN npm run build
 
 # ---------- 阶段 2：运行时 ----------
 # 服务端零 npm 依赖（node:sqlite 为 Node 22.13+/24 内置模块）
-# p7zip: /roms 下 .7z 游戏包由服务端解压后提供给浏览器
 FROM node:24-alpine
 WORKDIR /app
-RUN apk add --no-cache p7zip
 
 ENV NODE_ENV=production \
     PORT=4464 \

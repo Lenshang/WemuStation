@@ -6,8 +6,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { execFile } from 'node:child_process';
-import crypto from 'node:crypto';
 import { SYSTEMS, getSystem } from './lib/systems.js';
 import { scanSystem } from './lib/library.js';
 import { putBlob, getBlob, listBlobs, deleteBlob, getMeta, setMeta } from './lib/store.js';
@@ -84,20 +82,18 @@ function sendJSON(res, code, obj) {
   res.end(body);
 }
 
-function serveFile(res, filePath, cache = 'no-cache', extraHeaders = null) {
+function serveFile(res, filePath, cache = 'no-cache') {
   const ext = path.extname(filePath).toLowerCase();
   const type = MIME[ext] || 'application/octet-stream';
   let stream;
   try {
     const stat = fs.statSync(filePath);
-    const headers = {
+    res.writeHead(200, {
       'Content-Type': type,
       'Content-Length': stat.size,
       'Cache-Control': cache,
       'Accept-Ranges': 'none'
-    };
-    if (extraHeaders) Object.assign(headers, extraHeaders);
-    res.writeHead(200, headers);
+    });
     stream = fs.createReadStream(filePath);
     stream.pipe(res);
     stream.on('error', () => res.destroy());
@@ -118,56 +114,6 @@ function serveDir(res, baseDir, relPath, cache) {
   }
   if (stat.isDirectory()) return serveFile(res, path.join(target, 'index.html'), cache);
   serveFile(res, target, cache);
-}
-
-// Atari 等整合包把 ROM 打成 .7z，而 web 核心普遍不支持 7z 容器 —— 在服务端
-// 解压（缓存到临时目录）后把里面的 ROM 文件流给浏览器。
-const SEVENZIP_CANDIDATES = [
-  process.env.SEVENZIP_PATH,
-  'C:\\Program Files\\7-Zip\\7z.exe',
-  'C:\\Program Files (x86)\\7-Zip\\7z.exe',
-  '7z'
-].filter(Boolean);
-let sevenZipBin = SEVENZIP_CANDIDATES.find((c) => { try { fs.accessSync(c); return true; } catch { return false; } }) || null;
-
-function largestFileIn(dir) {
-  let best = null, bestSize = -1;
-  for (const f of fs.readdirSync(dir)) {
-    const fp = path.join(dir, f);
-    let st;
-    try { st = fs.statSync(fp); } catch { continue; }
-    if (st.isFile() && st.size > bestSize) { best = fp; bestSize = st.size; }
-  }
-  return best;
-}
-
-function serveSevenZipRom(res, p) {
-  if (!sevenZipBin) {
-    res.writeHead(415, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('7z 解压不可用：未找到 7z 程序（可设 SEVENZIP_PATH 环境变量）');
-    return;
-  }
-  const rel = decodeURIComponent(p.slice('/roms/'.length));
-  const abs = path.normalize(path.join(ROMS, rel));
-  if (!abs.startsWith(ROMS)) { res.writeHead(403); res.end('Forbidden'); return; }
-  if (!fs.existsSync(abs)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); return; }
-
-  const key = crypto.createHash('md5').update(abs).digest('hex');
-  const cacheDir = path.join(os.tmpdir(), 'wemu-7z', key);
-  let cached = null;
-  try { if (fs.existsSync(cacheDir)) cached = largestFileIn(cacheDir); } catch { cached = null; }
-  if (cached) return serveFile(res, cached, 'no-cache', { 'X-Rom-Filename': encodeURIComponent(path.basename(cached)) });
-
-  execFile(sevenZipBin, ['e', abs, '-o' + cacheDir, '-y'], { maxBuffer: 256 * 1024 * 1024 }, (err) => {
-    if (err) {
-      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('7z 解压失败: ' + (err.message || '').slice(0, 140));
-      return;
-    }
-    const best = largestFileIn(cacheDir);
-    if (!best) { res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('7z 解压后无文件'); return; }
-    serveFile(res, best, 'no-cache', { 'X-Rom-Filename': encodeURIComponent(path.basename(best)) });
-  });
 }
 
 // ---------- upload (multipart/form-data, minimal) ----------
@@ -423,7 +369,6 @@ const handler = async (req, res) => {
     if (p.startsWith('/emulatorjs/')) return serveDir(res, EMU_DATA, p.slice('/emulatorjs'.length), 'no-cache');
     if (p.startsWith('/retroarch/')) return serveDir(res, RETROARCH, p.slice('/retroarch'.length), 'no-cache');
     if (p.startsWith('/themes/')) return serveDir(res, THEMES, p.slice('/themes'.length), 'public, max-age=600');
-    if (p.startsWith('/roms/') && /\.7z$/i.test(p)) return serveSevenZipRom(res, p);
     if (p.startsWith('/roms/')) return serveDir(res, ROMS, p.slice('/roms'.length), 'no-cache');
     if (p.startsWith('/player.html')) return serveFile(res, path.join(ROOT, 'public', 'player.html'));
     if (p.startsWith('/retroarch-player.html')) return serveFile(res, path.join(ROOT, 'public', 'retroarch-player.html'));
