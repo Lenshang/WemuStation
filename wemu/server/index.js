@@ -364,6 +364,7 @@ async function handleAPI(req, res, url) {
 const handler = async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.pathname;
+  if (!p.startsWith('/api/storage')) console.log('[req]', req.method, p);
   try {
     if (p.startsWith('/api/')) return await handleAPI(req, res, url);
     if (p.startsWith('/emulatorjs/')) return serveDir(res, EMU_DATA, p.slice('/emulatorjs'.length), 'no-cache');

@@ -19,7 +19,8 @@ const EJS_CORES: Record<string, string> = {
   pcengine: 'pce',
   gba: 'gba',
   gb: 'gb',
-  psx: 'psx'
+  psx: 'psx',
+  dos: 'dosbox_pure'
 };
 
 // RetroArch statically-linked core names (must match /retroarch/*.js builds)
@@ -497,19 +498,25 @@ export class App {
     if (!sys || !game) return;
     // favorites/recent entries carry their real system id
     const coreId = game.sysId || sys.id;
-    const core = this.playerEngine === 'retroarch' ? RA_CORES[coreId] : EJS_CORES[coreId];
+    const raCore = RA_CORES[coreId];
+    const ejsCore = EJS_CORES[coreId];
+    let core = this.playerEngine === 'retroarch' ? raCore : ejsCore;
     if (!core) {
+      // RA 引擎缺核心但 EJS 有 → 自动回退 EJS
+      if (ejsCore) {
+        this.toast(`${sys.fullName} 使用 EmulatorJS 引擎运行`);
+        return this.startGameEJS(ejsCore);
+      }
       this.toast(`暂不支持 ${sys.fullName}`);
       return;
     }
     if (this.playerEngine === 'retroarch' && !this.retroarchAvailable.has(core)) {
-      const ejs = EJS_CORES[coreId];
-      if (!ejs) {
+      if (!ejsCore) {
         this.toast(`RetroArch 核心尚未构建，且 ${sys.fullName} 无 EmulatorJS 备选`);
         return;
       }
       this.toast('RetroArch 核心尚未构建，回退 EmulatorJS 引擎');
-      return this.startGameEJS(ejs);
+      return this.startGameEJS(ejsCore);
     }
     this.sounds.play('launch');
     this.screen = 'game';
