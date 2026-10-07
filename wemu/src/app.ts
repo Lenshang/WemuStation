@@ -136,6 +136,21 @@ export class App {
     }
   }
 
+  /** 全屏切换：主菜单入口。手柄按键不构成浏览器手势，被拒绝时给出提示 */
+  private async toggleFullscreen() {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        this.toast('已退出全屏');
+      } else {
+        await document.documentElement.requestFullscreen();
+        this.toast('已进入全屏');
+      }
+    } catch {
+      this.toast('浏览器拒绝了全屏请求——请用鼠标/触摸点一次该菜单项');
+    }
+  }
+
   // ---------- theme ----------
   private async loadSystemTheme(sys: SystemInfo) {
     const themeRoot = new URL(`/themes/${this.themeName}/`, location.origin).href;
@@ -166,6 +181,7 @@ export class App {
     this.mainMenu = new MainMenuPanel(this.root, this.input, {
       openSettings: () => this.openSettings(),
       openRAMainMenu: () => this.openRAMainMenu(),
+      toggleFullscreen: () => this.toggleFullscreen(),
       refreshLibrary: async () => {
         await this.loadSystems();
         await this.renderSystem('view-fade-in');

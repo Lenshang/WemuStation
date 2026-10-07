@@ -9,6 +9,7 @@ export interface MainMenuActions {
   openSettings: () => void;
   openRAMainMenu: () => void;
   refreshLibrary: () => Promise<void>;
+  toggleFullscreen: () => Promise<void>;
   themes: string[];
   currentTheme: string;
   onThemePick: (theme: string) => Promise<void>;
@@ -64,7 +65,14 @@ export class MainMenuPanel {
       { label: '配置按键', act: () => { this.close(); this.act.openSettings(); } },
       { label: 'RA 主菜单（语言 / 着色器 / 手柄…）', act: () => { this.close(); this.act.openRAMainMenu(); } },
       { label: '切换主题', act: () => { this.inThemes = true; this.idx = 0; this.render(); } },
-      { label: '刷新游戏库', act: async () => { this.close(); await this.act.refreshLibrary(); } }
+      { label: '刷新游戏库', act: async () => { this.close(); await this.act.refreshLibrary(); } },
+      {
+        label: document.fullscreenElement ? '退出全屏' : '全屏',
+        act: async () => {
+          await this.act.toggleFullscreen();
+          this.render();
+        }
+      }
     ];
   }
 
