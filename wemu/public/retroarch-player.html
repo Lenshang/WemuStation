@@ -189,6 +189,10 @@
         if (!romResp.ok) throw new Error('ROM 下载失败: HTTP ' + romResp.status);
         romData = new Uint8Array(await romResp.arrayBuffer());
         romName = decodeURIComponent(gameUrl.split('/').pop()).replace(/[^\w.\- ]+/g, '_');
+        // 7z 包由服务端解压：响应头带压缩包内 ROM 的真实文件名，用它命名
+        // （RA 按扩展名识别内容类型，.7z 名字会加载失败）
+        const inner7z = romResp.headers.get('X-Rom-Filename');
+        if (inner7z) romName = decodeURIComponent(inner7z).replace(/[^\w.\- ]+/g, '_');
       }
 
       // pull saves/states/config from the SERVER (shared across all clients)
