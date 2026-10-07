@@ -6,6 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import { SYSTEMS, getSystem } from './lib/systems.js';
 import { scanSystem } from './lib/library.js';
 import { putBlob, getBlob, listBlobs, deleteBlob, getMeta, setMeta } from './lib/store.js';
@@ -114,6 +116,107 @@ function serveDir(res, baseDir, relPath, cache) {
   }
   if (stat.isDirectory()) return serveFile(res, path.join(target, 'index.html'), cache);
   serveFile(res, target, cache);
+}
+
+// BIOS 回退：/roms/bios/ 里没有的 BIOS 文件，在 ROMS 树内搜索同名文件
+// （部分整合包把 pgm.zip 等 BIOS 放在游戏目录里）。索引一次建好并缓存。
+const biosFallback = { built: false, files: new Map() };
+function buildBiosFallbackIndex(root, depth) {
+  if (depth > 3) return;
+  let entries;
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (e.name.startsWith('.')) continue;
+    const full = path.join(root, e.name);
+    if (e.isDirectory()) buildBiosFallbackIndex(full, depth + 1);
+    else biosFallback.files.set(e.name.toLowerCase(), full); // 后扫到的覆盖（多目录同名 BIOS 取最新遍历到的）
+  }
+}
+// 7z 程序定位（Windows 常见安装路径 → PATH）
+const SEVENZIP_CANDIDATES = [
+  process.env.SEVENZIP_PATH,
+  'C:/Program Files/7-Zip/7z.exe',
+  'C:/Program Files (x86)/7-Zip/7z.exe',
+  '7z'
+].filter(Boolean);
+let sevenZipBin = SEVENZIP_CANDIDATES.find((c) => { try { fs.accessSync(c); return true; } catch { return false; } }) || null;
+
+function largestFileIn(dir) {
+  let best = null, bestSize = -1;
+  for (const f of fs.readdirSync(dir)) {
+    const fp = path.join(dir, f);
+    let st;
+    try { st = fs.statSync(fp); } catch { continue; }
+    if (st.isFile() && st.size > bestSize) { best = fp; bestSize = st.size; }
+  }
+  return best;
+}
+
+function serveBiosWithFallback(res, rel) {
+  const decoded = decodeURIComponent(rel);
+  const biosRoot = path.join(ROMS, 'bios');
+  const direct = path.normalize(path.join(biosRoot, decoded));
+  if (direct.startsWith(biosRoot) && fs.existsSync(direct)) return serveFile(res, direct, 'no-cache');
+  if (!biosFallback.built) { buildBiosFallbackIndex(ROMS, 0); biosFallback.built = true; }
+  const hit = biosFallback.files.get(decoded.toLowerCase());
+  if (hit) {
+    console.log('[bios-fallback]', decoded, '->', hit);
+    return serveFile(res, hit, 'no-cache');
+  }
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  res.end('Not found');
+}
+
+// FBN 系统的 .zip 街机 ROM：旧 FBA 集组缺 PGM BIOS（pgm.zip）。ROMS 树里
+// 能找到 pgm.zip 时，把它的内容与游戏 zip 合并重打后流出（FBAlpha 2012 的
+// 集组检查要求 BIOS 与游戏文件同在压缩包内）。
+function findInRoms(name, dir, depth, out) {
+  if (depth > 3) return;
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (e.name.startsWith('.')) continue;
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) findInRoms(name, full, depth + 1, out);
+    else if (e.name.toLowerCase() === name && !out.includes(full)) out.push(full);
+  }
+}
+
+function serveMergedZipRom(res, p) {
+  if (!sevenZipBin) {
+    res.writeHead(415, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('7z 解压不可用');
+    return;
+  }
+  const rel = decodeURIComponent(p.slice('/roms/'.length));
+  const abs = path.normalize(path.join(ROMS, rel));
+  if (!abs.startsWith(ROMS)) { res.writeHead(403); res.end('Forbidden'); return; }
+  if (!fs.existsSync(abs)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); return; }
+
+  const key = crypto.createHash('md5').update('merge' + abs).digest('hex');
+  const workDir = path.join(os.tmpdir(), 'wemu-merge', key);
+  const mergedZip = path.join(workDir, 'merged.zip');
+  try { if (fs.existsSync(mergedZip)) return serveFile(res, mergedZip, 'no-cache'); } catch { /* ignore */ }
+
+  const run = (args) => new Promise((resolve) => {
+    execFile(sevenZipBin, args, { maxBuffer: 256 * 1024 * 1024 }, () => resolve());
+  });
+  (async () => {
+    fs.mkdirSync(workDir, { recursive: true });
+    await run(['e', abs, '-o' + path.join(workDir, 'game'), '-y']);
+    const pgmCandidates = [];
+    findInRoms('pgm.zip', ROMS, 0, pgmCandidates);
+    for (const c of pgmCandidates) await run(['e', c, '-o' + path.join(workDir, 'pgm'), '-y']);
+    const all = [];
+    const walk = (d) => { for (const f of fs.readdirSync(d)) { const fp = path.join(d, f); if (fs.statSync(fp).isFile()) all.push(fp); else walk(fp); } };
+    if (fs.existsSync(path.join(workDir, 'game'))) walk(path.join(workDir, 'game'));
+    if (fs.existsSync(path.join(workDir, 'pgm'))) walk(path.join(workDir, 'pgm'));
+    await run(['a', '-tzip', '-mx=0', mergedZip].concat(all));
+    serveFile(res, mergedZip, 'no-cache');
+  })().catch((e) => {
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('合并失败: ' + (e.message || '').slice(0, 140));
+  });
 }
 
 // ---------- upload (multipart/form-data, minimal) ----------
@@ -364,12 +467,21 @@ async function handleAPI(req, res, url) {
 const handler = async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.pathname;
+  // 多线程 WASM 核心（dosbox_pure）需要 SharedArrayBuffer：
+  // 这两个头让页面 cross-origin-isolated，SAB 才可用。本站资源同源，无 CORP 影响。
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
   if (!p.startsWith('/api/storage')) console.log('[req]', req.method, p);
   try {
     if (p.startsWith('/api/')) return await handleAPI(req, res, url);
     if (p.startsWith('/emulatorjs/')) return serveDir(res, EMU_DATA, p.slice('/emulatorjs'.length), 'no-cache');
     if (p.startsWith('/retroarch/')) return serveDir(res, RETROARCH, p.slice('/retroarch'.length), 'no-cache');
     if (p.startsWith('/themes/')) return serveDir(res, THEMES, p.slice('/themes'.length), 'public, max-age=600');
+    if (p.startsWith('/roms/bios/')) return serveBiosWithFallback(res, p.slice('/roms/bios/'.length));
+    // FBA2012/FBNeo 系街机 zip：集组要求 BIOS 与游戏文件同包——合并 pgm.zip 后流出
+    if (p.startsWith('/roms/') && /\.zip$/i.test(p) && /fbalpha|fbneo/i.test(req.headers.referer || '')) {
+      return serveMergedZipRom(res, p);
+    }
     if (p.startsWith('/roms/')) return serveDir(res, ROMS, p.slice('/roms'.length), 'no-cache');
     if (p.startsWith('/player.html')) return serveFile(res, path.join(ROOT, 'public', 'player.html'));
     if (p.startsWith('/retroarch-player.html')) return serveFile(res, path.join(ROOT, 'public', 'retroarch-player.html'));

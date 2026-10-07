@@ -213,6 +213,47 @@
       // system dir and PSX needs a scph*.bin. The library's bios/ folder
       // (served under /roms/bios/) already has them — pull whichever exist.
       // Optional entries simply 404 and are skipped.
+      // 极简 zip 读取：支持 stored / deflate（浏览器 DecompressionStream）
+      async function unzipToEntries(bytes) {
+        const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        // 从尾部找 EOCD（PK）
+        let eocd = -1;
+        for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 66000); i--) {
+          if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+        }
+        if (eocd === -1) throw new Error('not a zip');
+        const count = dv.getUint16(eocd + 10, true);
+        const cdOff = dv.getUint32(eocd + 16, true);
+        const td = new TextDecoder();
+        let p = cdOff;
+        const out = [];
+        for (let i = 0; i < count; i++) {
+          if (dv.getUint32(p, true) !== 0x02014b50) break;
+          const method = dv.getUint16(p + 10, true);
+          const csize = dv.getUint32(p + 20, true);
+          const nlen = dv.getUint16(p + 28, true);
+          const elen = dv.getUint16(p + 30, true);
+          const clen = dv.getUint16(p + 32, true);
+          const lho = dv.getUint32(p + 42, true);
+          const name = td.decode(bytes.subarray(p + 46, p + 46 + nlen));
+          p += 46 + nlen + elen + clen;
+          // local header
+          const lnl = dv.getUint16(lho + 26, true);
+          const lel = dv.getUint16(lho + 28, true);
+          const dataOff = lho + 30 + lnl + lel;
+          const rawData = bytes.subarray(dataOff, dataOff + csize);
+          let data;
+          if (method === 0) data = rawData;
+          else if (method === 8) {
+            const ds = new DecompressionStream('deflate-raw');
+            const w = ds.writable.getWriter(); w.write(rawData); w.close();
+            data = new Uint8Array(await new Response(ds.readable).arrayBuffer());
+          } else continue;
+          out.push([name, data]);
+        }
+        return out;
+      }
+
       const biosFiles = {};
       if (!menuMode) {
         // entries support "srcName>destName" when the core expects a
@@ -234,6 +275,19 @@
             if (r.ok) biosFiles[dest] = new Uint8Array(await r.arrayBuffer());
           } catch { /* optional */ }
         }));
+        // 压缩包形态的 BIOS（pgm.zip 等）解出散文件——FBA2012 等驱动的
+        // BIOS 搜索需要散文件
+        for (const [dest, data] of Object.entries(biosFiles)) {
+          if (!/\.zip$/i.test(dest)) continue;
+          try {
+            const entries = await unzipToEntries(data);
+            for (const [name, bytes] of entries) {
+              const safe = name.split('/').pop().replace(/[^\w.\- ]+/g, '_');
+              biosFiles[dest.replace(/\.zip$/i, '') + '_' + safe] = bytes;
+            }
+            delete biosFiles[dest];
+          } catch { /* 保留 zip 本体 */ }
+        }
       }
 
       loadingText.textContent = '正在加载 RetroArch 核心…';
@@ -362,7 +416,11 @@
           // scph*.bin for PSX, gb/gbc/gba boot ROMs — all optional)
           for (const [b, data] of Object.entries(biosFiles)) {
             try { FS.writeFile(HOME + '/system/' + b, data); } catch { /* ignore */ }
+            // FBNeo/MAME 的部分驱动只在游戏 ROM 同目录找 BIOS（如 kov 需 pgm.zip）——
+            // 额外在内容目录放一份
+            try { FS.writeFile(ROM_DIR + '/' + b, data); } catch { /* ignore */ }
           }
+
           // snapshot the pulled cfg signature so persistFiles can tell a
           // boot-time cfg (skip push) from one RA actually rewrote (push)
           try {
