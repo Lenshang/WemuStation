@@ -32,7 +32,7 @@ export class SearchPanel {
   private keyCol = 0;
   private onPick: (gameIdx: number) => void = () => {};
 
-  constructor(root: HTMLElement) {
+  constructor(_root: HTMLElement) {
     const overlay = document.createElement('div');
     overlay.className = 'wemu-search-overlay';
     const panel = document.createElement('div');
@@ -69,7 +69,8 @@ export class SearchPanel {
 
     panel.append(input, osk, listEl, hintEl);
     overlay.appendChild(panel);
-    root.appendChild(overlay);
+    // 挂 body：#app 会在每次视图重建时被清空，挂那里会被连根移除
+    document.body.appendChild(overlay);
 
     input.addEventListener('input', () => { this.query = input.value; this.filter(); });
     input.addEventListener('keydown', (e) => {
@@ -92,6 +93,7 @@ export class SearchPanel {
     this.games = games;
     this.onPick = onPick;
     if (!this.overlay) return;
+    if (!this.overlay.isConnected) document.body.appendChild(this.overlay);
     this.overlay.style.display = '';
     this.zone = 'keys';
     this.keyRow = 1; this.keyCol = 0;
