@@ -47,7 +47,6 @@ const RA_CORES: Record<string, string> = {
   gameandwatch: 'gw',
   sms: 'genesis_plus_gx',
   '3do': 'opera',
-  dos: 'dosbox_pure',
   atari2600: 'stella2014',
   atari5200: 'atari800',
   atari7800: 'prosystem'
@@ -77,7 +76,6 @@ const ROM_EXTENSIONS: Record<string, string[]> = {
   gameandwatch: ['gw', 'mgw', 'zip'],
   sms: ['sms', 'zip', '7z'],
   '3do': ['iso', 'chd', 'cue', 'zip'],
-  dos: ['zip', 'exe', 'com'],
   atari2600: ['a26', '7z', 'zip', 'bin'],
   atari5200: ['a52', '7z', 'zip', 'bin'],
   atari7800: ['a78', '7z', 'zip', 'bin']

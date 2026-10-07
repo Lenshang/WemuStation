@@ -236,16 +236,18 @@ export const SYSTEMS = [
     themeDir: '3do',
     extensions: ['iso', 'chd', 'cue', 'zip']
   },
-  {
-    id: 'dos',
-    fullName: 'DOS (DOSBox Pure)',
-    shortName: 'DOS',
-    manufacturer: 'IBM PC Compatible',
-    releaseYear: '1981',
-    themeDir: 'dos',
-    aliases: ['dosbox', 'msdos'],
-    extensions: ['zip', 'exe', 'com']
-  },
+  // DOS: dosbox_pure 的 emscripten 构建上游已损坏/移除（内容初始化死锁），
+  // 待上游恢复后取消注释即可。详见 README。
+  //   {
+  //     id: 'dos',
+  //     fullName: 'DOS (DOSBox Pure)',
+  //     shortName: 'DOS',
+  //     manufacturer: 'IBM PC Compatible',
+  //     releaseYear: '1981',
+  //     themeDir: 'dos',
+  //     aliases: ['dosbox', 'msdos'],
+  //     extensions: ['zip', 'exe', 'com']
+  //   },
   {
     id: 'atari2600',
     fullName: 'Atari 2600',
