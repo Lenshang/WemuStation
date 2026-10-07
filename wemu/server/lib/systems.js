@@ -236,8 +236,8 @@ export const SYSTEMS = [
     themeDir: '3do',
     extensions: ['iso', 'chd', 'cue', 'zip']
   },
-  // DOS：dosbox_pure 的 emscripten（web）构建上游已损坏——官方发行版/CI 均不提供，
-  // 自建版在游戏初始化时崩溃。待上游恢复后取消注释并部署对应核心。
+  // DOS: dosbox_pure 的 emscripten 构建上游已损坏/移除（内容初始化死锁），
+  // 待上游恢复后取消注释即可。详见 README。
   //   {
   //     id: 'dos',
   //     fullName: 'DOS (DOSBox Pure)',

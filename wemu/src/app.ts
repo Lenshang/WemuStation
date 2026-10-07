@@ -34,7 +34,7 @@ const RA_CORES: Record<string, string> = {
   psx: 'pcsx_rearmed',
   gbc: 'gambatte',
   gamegear: 'genesis_plus_gx',
-  fbneo: 'fbneo',
+  fbneo: 'fbalpha2012',
   neogeo: 'fbneo',
   cps1: 'fbneo',
   cps2: 'fbneo',
