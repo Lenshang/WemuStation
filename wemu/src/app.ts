@@ -53,6 +53,57 @@ const RA_CORES: Record<string, string> = {
   atari7800: 'prosystem'
 };
 
+// 每系统的备选 RA 核心（首个为默认）。玩家可在主菜单切换。
+const SYSTEM_CORES: Record<string, string[]> = {
+  nes: ['fceumm', 'nestopia'],
+  snes: ['snes9x', 'snes9x2010', 'snes9x2005'],
+  megadrive: ['genesis_plus_gx', 'picodrive'],
+  pcengine: ['mednafen_pce', 'mednafen_pce_fast', 'geargrafx'],
+  gba: ['mgba', 'vba_next'],
+  gb: ['gambatte', 'gearboy', 'doublecherrygb'],
+  psx: ['pcsx_rearmed'],
+  gbc: ['gambatte'],
+  gamegear: ['genesis_plus_gx', 'gearsystem'],
+  sms: ['gearsystem', 'genesis_plus_gx'],
+  neogeo: ['fbalpha2012_neogeo', 'fbalpha2012', 'fbneo'],
+  fbneo: ['fbalpha2012', 'fbneo'],
+  cps1: ['fbalpha2012_cps1', 'fbalpha2012'],
+  cps2: ['fbalpha2012_cps2', 'fbalpha2012'],
+  cps3: ['fbalpha2012_cps3', 'fbalpha2012'],
+  mame: ['mame2003_plus', 'mame2003', 'mame2000'],
+  ngp: ['mednafen_ngp'],
+  ngpc: ['mednafen_ngp'],
+  virtualboy: ['mednafen_vb'],
+  wonderswan: ['mednafen_wswan'],
+  wonderswancolor: ['mednafen_wswan'],
+  gameandwatch: ['gw'],
+  '3do': ['opera'],
+  atari2600: ['stella2014'],
+  atari5200: ['atari800'],
+  atari7800: ['prosystem']
+};
+
+const CORE_LABELS: Record<string, string> = {
+  fceumm: 'FCEUmm', nestopia: 'Nestopia（高精度）',
+  snes9x: 'Snes9x（推荐）', snes9x2010: 'Snes9x 2010', snes9x2005: 'Snes9x 2005', snes9x2002: 'Snes9x 2002',
+  genesis_plus_gx: 'Genesis Plus GX', picodrive: 'Picodrive',
+  mednafen_pce: 'Beetle PCE', mednafen_pce_fast: 'Beetle PCE Fast', geargrafx: 'Geargrafx',
+  mgba: 'mGBA（推荐）', vba_next: 'VBA Next',
+  gambatte: 'Gambatte（推荐）', gearboy: 'Gearboy', doublecherrygb: 'DoubleCherryGB',
+  pcsx_rearmed: 'PCSX ReARMed',
+  fbalpha2012: 'FB Alpha 2012', fbneo: 'FBNeo（新版）',
+  fbalpha2012_neogeo: 'FB Alpha 2012 NeoGeo', fbalpha2012_cps1: 'FB Alpha 2012 CPS1', fbalpha2012_cps2: 'FB Alpha 2012 CPS2', fbalpha2012_cps3: 'FB Alpha 2012 CPS3',
+  mame2003_plus: 'MAME 2003 Plus', mame2003: 'MAME 2003', mame2000: 'MAME 2000',
+  mednafen_ngp: 'Beetle NeoPop', mednafen_vb: 'Beetle VB', mednafen_wswan: 'Beetle WonderSwan',
+  gw: 'Game & Watch', genesis_plus_gx_sms: '',
+  gearsystem: 'Gearsystem',
+  stella2014: 'Stella 2014', atari800: 'Atari800', prosystem: 'ProSystem', opera: 'Opera（3DO）'
+};
+
+function coreLabel(coreId: string): string {
+  return CORE_LABELS[coreId] || coreId;
+}
+
 const ROM_EXTENSIONS: Record<string, string[]> = {
   nes: ['nes', 'fds', 'unf', 'unif', 'zip', '7z'],
   snes: ['smc', 'sfc', 'swc', 'fig', 'zip', '7z'],
@@ -100,6 +151,7 @@ export class App {
   infoTexts: Record<string, string> = {};
   private gamelistRefs: GamelistRefs | null = null;
   private searchPanel: SearchPanel | null = null;
+  private coreSelection: Record<string, string> = {};
   favoriteGames: GameEntry[] = [];
   recentGames: GameEntry[] = [];
   private player: PlayerHandle | null = null;
@@ -116,6 +168,7 @@ export class App {
       this.themeName = cfg.theme || this.themeName;
       this.themeVariant = cfg.variant || this.themeVariant;
       this.playerEngine = cfg.player === 'emulatorjs' ? 'emulatorjs' : 'retroarch';
+      this.loadCoreSelection();
       await this.loadSystems();
       if (!this.systems.length) throw new Error('没有可用的系统（ROM 目录为空？）');
       this.unhideSplashText();
@@ -181,6 +234,17 @@ export class App {
       openSettings: () => this.openSettings(),
       openRAMainMenu: () => this.openRAMainMenu(),
       toggleFullscreen: () => this.toggleFullscreen(),
+      coreChoices: (function (self: App) {
+        const sys = self.systems[self.sysIdx];
+        const ids = SYSTEM_CORES[sys.id] || [];
+        return {
+          items: ids.map((c) => ({ coreId: c, label: coreLabel(c), available: self.retroarchAvailable.has(c), selected: self.selectedRaCore(sys.id) === c })),
+          pick: (coreId: string) => {
+            self.saveCoreSelection(sys.id, coreId);
+            self.toast(`已选择 ${coreLabel(coreId)}：重启游戏后生效`);
+          }
+        };
+      })(this),
       refreshLibrary: async () => {
         await this.loadSystems();
         await this.renderSystem('view-fade-in');
@@ -223,12 +287,30 @@ export class App {
   }
 
   private async probeRetroarchCores() {
-    await Promise.all(Object.entries(RA_CORES).map(async ([, core]) => {
+    const all = new Set<string>(Object.values(RA_CORES));
+    for (const list of Object.values(SYSTEM_CORES)) for (const c of list) all.add(c);
+    await Promise.all([...all].map(async (core) => {
       try {
         const r = await fetch(`/retroarch/${core}_libretro.js`, { method: 'HEAD' });
         if (r.ok) this.retroarchAvailable.add(core);
       } catch { /* not built */ }
     }));
+  }
+
+  /** 系统当前生效的 RA 核心：玩家选择 > 每系统默认 */
+  private selectedRaCore(sysId: string): string | undefined {
+    const picked = this.coreSelection[sysId];
+    if (picked && (RA_CORES[sysId] === picked || SYSTEM_CORES[sysId]?.includes(picked))) return picked;
+    return RA_CORES[sysId];
+  }
+
+  private loadCoreSelection() {
+    try { this.coreSelection = JSON.parse(localStorage.getItem('wemu-core-sel') || '{}'); } catch { this.coreSelection = {}; }
+  }
+
+  private saveCoreSelection(sysId: string, coreId: string) {
+    this.coreSelection[sysId] = coreId;
+    try { localStorage.setItem('wemu-core-sel', JSON.stringify(this.coreSelection)); } catch { /* ignore */ }
   }
 
   private async loadSystemInfo(themeRoot: string, themeDir: string): Promise<Record<string, string>> {
@@ -498,7 +580,7 @@ export class App {
     if (!sys || !game) return;
     // favorites/recent entries carry their real system id
     const coreId = game.sysId || sys.id;
-    const raCore = RA_CORES[coreId];
+    const raCore = this.selectedRaCore(coreId);
     const ejsCore = EJS_CORES[coreId];
     let core = this.playerEngine === 'retroarch' ? raCore : ejsCore;
     if (!core) {

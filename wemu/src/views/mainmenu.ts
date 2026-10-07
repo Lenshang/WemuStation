@@ -10,6 +10,7 @@ export interface MainMenuActions {
   openRAMainMenu: () => void;
   refreshLibrary: () => Promise<void>;
   toggleFullscreen: () => Promise<void>;
+  coreChoices: { items: { coreId: string; label: string; available: boolean; selected: boolean }[]; pick: (coreId: string) => void };
   themes: string[];
   currentTheme: string;
   onThemePick: (theme: string) => Promise<void>;
@@ -31,6 +32,7 @@ export class MainMenuPanel {
   private idx = 0;
   private closed = false;
   private inThemes = false;
+  private inCores = false;
 
   constructor(
     private root: HTMLElement,
@@ -61,10 +63,24 @@ export class MainMenuPanel {
         }
       }));
     }
+    if (this.inCores) {
+      return this.act.coreChoices.items.map((c) => ({
+        label: c.label + (c.selected ? THEME_MARK : '') + (c.available ? '' : '（未构建）'),
+        act: async () => {
+          this.act.coreChoices.pick(c.coreId);
+          this.inCores = false;
+          this.render();
+        }
+      }));
+    }
     return [
       { label: '配置按键', act: () => { this.close(); this.act.openSettings(); } },
       { label: 'RA 主菜单（语言 / 着色器 / 手柄…）', act: () => { this.close(); this.act.openRAMainMenu(); } },
-      { label: '切换主题', act: () => { this.inThemes = true; this.idx = 0; this.render(); } },
+      { label: '切换主题', act: () => { this.inThemes = true; this.inCores = false; this.idx = 0; this.render(); } },
+      ...(this.act.coreChoices ? [{
+        label: '模拟器核心',
+        act: () => { this.inCores = true; this.inThemes = false; this.idx = 0; this.render(); }
+      }] : []),
       { label: '刷新游戏库', act: async () => { this.close(); await this.act.refreshLibrary(); } },
       {
         label: document.fullscreenElement ? '退出全屏' : '全屏',
@@ -81,7 +97,7 @@ export class MainMenuPanel {
     this.el.innerHTML = '';
     this.titleEl = document.createElement('div');
     this.titleEl.className = 'mainmenu-title';
-    this.titleEl.textContent = this.inThemes ? '切换主题' : '主菜单';
+    this.titleEl.textContent = this.inThemes ? '切换主题' : (this.inCores ? '模拟器核心' : '主菜单');
     this.el.appendChild(this.titleEl);
 
     this.listEl = document.createElement('div');
@@ -118,7 +134,10 @@ export class MainMenuPanel {
       case 'up': this.move(-1); break;
       case 'down': this.move(1); break;
       case 'accept': this.activate(); break;
-      case 'cancel': this.close(); break;
+      case 'cancel':
+        if (this.inThemes || this.inCores) { this.inThemes = false; this.inCores = false; this.idx = 0; this.render(); }
+        else this.close();
+        break;
       default: break;
     }
   }
