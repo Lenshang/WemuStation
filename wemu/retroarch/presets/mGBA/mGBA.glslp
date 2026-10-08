@@ -1,0 +1,3 @@
+shaders = "1"
+shader0 = "/home/web_user/retroarch/system/shaders/lcd/lcd-01.glslp"
+filter_linear0 = "false"

@@ -21,6 +21,7 @@ export class SearchPanel {
   private overlay: HTMLElement | null = null;
   private input: HTMLInputElement | null = null;
   private listEl: HTMLElement | null = null;
+  private hintEl: HTMLElement | null = null;
   private keyCells: HTMLElement[][] = [];
   private games: GameEntry[] = [];
   private hay: string[] = [];       // lowercase name + initials, per game
@@ -190,7 +191,7 @@ export class SearchPanel {
     this.onPick(gi);
   }
 
-  private filter() {
+  private filter(query?: string) {
     if (!this.listEl) return;
     const q = this.query.trim().toLowerCase();
     this.resultIdx = [];

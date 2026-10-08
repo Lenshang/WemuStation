@@ -13,6 +13,26 @@ export const SYSTEMS = [
     extensions: ['nes', 'fds', 'unf', 'unif', 'zip', '7z']
   },
   {
+    id: 'n64',
+    aliases: ['nintendo-64'],
+    fullName: 'Nintendo 64',
+    shortName: 'N64',
+    manufacturer: 'Nintendo',
+    releaseYear: '1996',
+    themeDir: 'n64',
+    extensions: ['z64', 'v64', 'n64', 'zip', '7z']
+  },
+  {
+    id: 'nds',
+    aliases: ['nintendo-ds'],
+    fullName: 'Nintendo DS',
+    shortName: 'NDS',
+    manufacturer: 'Nintendo',
+    releaseYear: '2004',
+    themeDir: 'nds',
+    extensions: ['nds', 'zip', '7z']
+  },
+  {
     id: 'snes',
     aliases: ['sfc', 'superfamicom', 'super-nintendo'],
     fullName: 'Super Nintendo Entertainment System',
@@ -36,7 +56,7 @@ export const SYSTEMS = [
   },
   {
     id: 'pcengine',
-    aliases: ['pce', 'tg16', 'turbografx16', 'turbografx', 'pcecd', 'pcenginecd'],
+    aliases: ['pce', 'tg16', 'turbografx16', 'turbografx'],
     fullName: 'PC Engine / TurboGrafx-16',
     shortName: 'PC Engine',
     manufacturer: 'NEC',
@@ -44,6 +64,16 @@ export const SYSTEMS = [
     ejsCore: 'pce',
     themeDir: 'pcengine',
     extensions: ['pce', 'cue', 'ccd', 'zip', '7z']
+  },
+  {
+    id: 'pcenginecd',
+    aliases: ['pce-cd', 'pcecd', 'pcengine-cd', 'tg16cd'],
+    fullName: 'PC Engine CD',
+    shortName: 'PC Engine CD',
+    manufacturer: 'NEC',
+    releaseYear: '1988',
+    themeDir: 'pcenginecd',
+    extensions: ['cue', 'chd', 'iso', 'toc']
   },
   {
     id: 'gba',
@@ -77,6 +107,16 @@ export const SYSTEMS = [
     ejsCore: 'psx',
     themeDir: 'psx',
     extensions: ['bin', 'cue', 'pbp', 'chd', 'iso', 'img', 'zip', '7z']
+  },
+  {
+    id: 'psp',
+    aliases: ['playstationportable', 'pspgo'],
+    fullName: 'PlayStation Portable',
+    shortName: 'PSP',
+    manufacturer: 'Sony',
+    releaseYear: '2004',
+    themeDir: 'psp',
+    extensions: ['iso', 'cso', 'pbp', 'chd', 'elf']
   },
   {
     id: 'gbc',
@@ -117,6 +157,16 @@ export const SYSTEMS = [
     releaseYear: '1990',
     themeDir: 'neogeo',
     extensions: ['zip', '7z']
+  },
+  {
+    id: 'neogeocd',
+    aliases: ['neo-geo-cd', 'neogeocd'],
+    fullName: 'Neo Geo CD',
+    shortName: 'Neo Geo CD',
+    manufacturer: 'SNK',
+    releaseYear: '1994',
+    themeDir: 'neogeocd',
+    extensions: ['chd', 'cue', 'iso', 'toc']
   },
   {
     id: 'cps1',
@@ -225,7 +275,68 @@ export const SYSTEMS = [
     manufacturer: 'Sega',
     releaseYear: '1985',
     themeDir: 'sms',
+    aliases: ['mastersystem', 'segamastersystem', 'sega-master-system'],
     extensions: ['sms', 'zip', '7z']
+  },
+  {
+    id: 'sg1000',
+    aliases: ['sg-1000', 'sc-3000'],
+    fullName: 'SG-1000',
+    shortName: 'SG-1000',
+    manufacturer: 'Sega',
+    releaseYear: '1983',
+    themeDir: 'sg-1000',
+    extensions: ['sg', 'sc', 'bin', 'zip', '7z']
+  },
+  {
+    id: 'segacd',
+    aliases: ['sega-cd', 'megacd', 'mega-cd'],
+    fullName: 'Sega CD',
+    shortName: 'Sega CD',
+    manufacturer: 'Sega',
+    releaseYear: '1991',
+    themeDir: 'segacd',
+    extensions: ['cue', 'chd', 'iso', 'toc']
+  },
+  {
+    id: 'sega32x',
+    aliases: ['32x', 'mega32x', 'sega-32x'],
+    fullName: 'Sega 32X',
+    shortName: '32X',
+    manufacturer: 'Sega',
+    releaseYear: '1994',
+    themeDir: 'sega32x',
+    extensions: ['32x', 'bin', 'zip', '7z']
+  },
+  {
+    id: 'msx2',
+    aliases: ['msx', 'msx2+'],
+    fullName: 'MSX2',
+    shortName: 'MSX2',
+    manufacturer: 'Microsoft',
+    releaseYear: '1985',
+    themeDir: 'msx2',
+    extensions: ['rom', 'mx1', 'mx2', 'dsk', 'cas', 'zip', '7z']
+  },
+  {
+    id: 'pc98',
+    aliases: ['pc-98', 'pc9821'],
+    fullName: 'PC-98',
+    shortName: 'PC-98',
+    manufacturer: 'NEC',
+    releaseYear: '1982',
+    themeDir: 'pc98',
+    extensions: ['hdi', 'd88', 'd98', 'fdi', 'thd', 'nfd', 'cmd', 'zip', '7z']
+  },
+  {
+    id: 'lynx',
+    aliases: ['atarilynx', 'atari-lynx'],
+    fullName: 'Atari Lynx',
+    shortName: 'Lynx',
+    manufacturer: 'Atari',
+    releaseYear: '1989',
+    themeDir: 'atarilynx',
+    extensions: ['lnx', 'lyx', 'zip', '7z']
   },
   {
     id: '3do',

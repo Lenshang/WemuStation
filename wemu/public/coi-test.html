@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>COI test</title></head>
+<body>
+<div id="out">pending</div>
+<script>
+  const out = document.getElementById('out');
+  const r = {
+    coi: window.crossOriginIsolated,
+    sec: window.isSecureContext,
+    sab: typeof SharedArrayBuffer,
+    ua: navigator.userAgent
+  };
+  out.textContent = 'COI-RESULT ' + JSON.stringify(r);
+  fetch('/api/coi-report', { method: 'POST', body: out.textContent }).catch(() => {});
+</script>
+</body></html>

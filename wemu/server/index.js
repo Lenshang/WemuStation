@@ -8,6 +8,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
+import workerThreads from 'node:worker_threads';
 import { SYSTEMS, getSystem } from './lib/systems.js';
 import { scanSystem } from './lib/library.js';
 import { putBlob, getBlob, listBlobs, deleteBlob, getMeta, setMeta } from './lib/store.js';
@@ -19,6 +20,7 @@ const DIST = path.join(ROOT, 'dist');            // vite build output (productio
 const THEMES = path.join(ROOT, 'themes');
 const EMU_DATA = path.join(ROOT, 'emulator');   // /emulatorjs/data/* → emulator/data/*
 const RETROARCH = path.join(ROOT, 'retroarch'); // /retroarch/* → retroarch/* (wasm builds)
+const PPSSPP = path.join(ROOT, 'ppsspp');       // /ppsspp/* → ppsspp/* (PPSSPP standalone wasm)
 const CONFIG_FILE = path.join(ROOT, 'server', 'config.json');
 
 const config = {
@@ -167,19 +169,37 @@ function serveBiosWithFallback(res, rel) {
   res.end('Not found');
 }
 
-// FBN 系统的 .zip 街机 ROM：旧 FBA 集组缺 PGM BIOS（pgm.zip）。ROMS 树里
-// 能找到 pgm.zip 时，把它的内容与游戏 zip 合并重打后流出（FBAlpha 2012 的
-// 集组检查要求 BIOS 与游戏文件同在压缩包内）。
-function findInRoms(name, dir, depth, out) {
-  if (depth > 3) return;
-  let entries;
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-  for (const e of entries) {
-    if (e.name.startsWith('.')) continue;
-    const full = path.join(dir, e.name);
-    if (e.isDirectory()) findInRoms(name, full, depth + 1, out);
-    else if (e.name.toLowerCase() === name && !out.includes(full)) out.push(full);
+// FBA2012/FBNeo 系 .zip 街机 ROM：集组检查要求 BIOS 与游戏文件同包——旧 FBA
+// 集组缺 PGM BIOS（pgm.zip），NEOGEO 目录的散装游戏缺 NeoGeo BIOS。ROMS 树里
+// 能找到这些 BIOS zip 时，把内容与游戏 zip 合并重打后流出。
+const MERGE_BIOS_ZIPS = ['neogeo.zip', 'pgm2.zip', 'pgm.zip', 'isgsm.zip'];
+// pgm.zip 解包后上百 MB：只有 PGM 游戏（集组内必有 *.asic 保护数据文件）
+// 才并入，其余游戏跳过，避免每次进游戏白下几十 MB
+const MERGE_PGM_ONLY = new Set(['pgm.zip', 'isgsm.zip']);
+// FBNeo 与 MAME 系对同一颗 BIOS ROM 的命名差异（内容相同、文件名不同）。
+// 仅在 CRC 校验相符时改名，防止把别的版本文件冒名顶替进集组。
+const MERGE_BIOS_RENAMES = [
+  // MVS "S3" 版 68K BIOS：MAME 命名的 neogeo.zip 里叫 asia-s3.rom，
+  // FBNeo 的集组要求 sp-s3.sp1
+  { from: 'asia-s3.rom', to: 'sp-s3.sp1', crc: 0x91b64be3 }
+];
+
+// 小型 CRC32：合并时核对 BIOS ROM 的确切版本
+const CRC32_TABLE = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c;
   }
+  return t;
+})();
+
+function crc32File(fp) {
+  const buf = fs.readFileSync(fp);
+  let c = -1;
+  for (let i = 0; i < buf.length; i++) c = CRC32_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ -1) >>> 0;
 }
 
 function serveMergedZipRom(res, p) {
@@ -193,7 +213,9 @@ function serveMergedZipRom(res, p) {
   if (!abs.startsWith(ROMS)) { res.writeHead(403); res.end('Forbidden'); return; }
   if (!fs.existsSync(abs)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); return; }
 
-  const key = crypto.createHash('md5').update('merge' + abs).digest('hex');
+  // v3 合并：BIOS zip 全集 + MAME→FBNeo 命名改名 + pgm 仅对 PGM 游戏并入。
+  // 换 seed 让旧版缓存（只合过 pgm.zip / 无差别全合的包）自动失效重建
+  const key = crypto.createHash('md5').update('merge3' + abs).digest('hex');
   const workDir = path.join(os.tmpdir(), 'wemu-merge', key);
   const mergedZip = path.join(workDir, 'merged.zip');
   try { if (fs.existsSync(mergedZip)) return serveFile(res, mergedZip, 'no-cache'); } catch { /* ignore */ }
@@ -203,14 +225,33 @@ function serveMergedZipRom(res, p) {
   });
   (async () => {
     fs.mkdirSync(workDir, { recursive: true });
-    await run(['e', abs, '-o' + path.join(workDir, 'game'), '-y']);
-    const pgmCandidates = [];
-    findInRoms('pgm.zip', ROMS, 0, pgmCandidates);
-    for (const c of pgmCandidates) await run(['e', c, '-o' + path.join(workDir, 'pgm'), '-y']);
+    const gameDir = path.join(workDir, 'game');
+    await run(['e', abs, '-o' + gameDir, '-y']);
+    let isPgm = false;
+    try {
+      for (const f of fs.readdirSync(gameDir)) {
+        if (/\.asic$/i.test(f)) { isPgm = true; break; }
+      }
+    } catch { /* ignore */ }
+    // BIOS zip 用 bios-fallback 的全树文件索引查找（与 /roms/bios/ 同源）
+    if (!biosFallback.built) { buildBiosFallbackIndex(ROMS, 0); biosFallback.built = true; }
+    const biosNames = isPgm ? MERGE_BIOS_ZIPS : MERGE_BIOS_ZIPS.filter((n) => !MERGE_PGM_ONLY.has(n));
+    const biosDir = path.join(workDir, 'bios');
+    for (const name of biosNames) {
+      const hit = biosFallback.files.get(name);
+      if (hit) await run(['e', hit, '-o' + biosDir, '-y']);
+    }
+    for (const r of MERGE_BIOS_RENAMES) {
+      const src = path.join(biosDir, r.from);
+      const dst = path.join(biosDir, r.to);
+      try {
+        if (fs.existsSync(src) && !fs.existsSync(dst) && crc32File(src) === r.crc) fs.renameSync(src, dst);
+      } catch { /* ignore */ }
+    }
     const all = [];
     const walk = (d) => { for (const f of fs.readdirSync(d)) { const fp = path.join(d, f); if (fs.statSync(fp).isFile()) all.push(fp); else walk(fp); } };
-    if (fs.existsSync(path.join(workDir, 'game'))) walk(path.join(workDir, 'game'));
-    if (fs.existsSync(path.join(workDir, 'pgm'))) walk(path.join(workDir, 'pgm'));
+    if (fs.existsSync(gameDir)) walk(gameDir);
+    if (fs.existsSync(biosDir)) walk(biosDir);
     await run(['a', '-tzip', '-mx=0', mergedZip].concat(all));
     serveFile(res, mergedZip, 'no-cache');
   })().catch((e) => {
@@ -319,8 +360,48 @@ function apiSystems() {
   }).filter((s) => s.gameCount > 0);
 }
 
+// 全库扫描较慢（几十个系统 × 整棵 ROMS 树）且是同步遍历，放在主进程里会
+// 卡死事件循环十秒以上。结果常驻缓存、页面秒开；每 5 分钟在 worker 线程
+// 后台重扫一次，扫描期间请求照常返回旧数据（stale-while-revalidate）。
+let systemsListCache = null;
+let systemsListBuiltAt = 0;
+let systemsListJob = null;
+function buildSystemsListAsync() {
+  const { Worker } = workerThreads;
+  return new Promise((resolve, reject) => {
+    const w = new Worker(new URL('./lib/scan-worker.mjs', import.meta.url), {
+      workerData: { roms: ROMS, systems: SYSTEMS }
+    });
+    w.on('message', (data) => { w.terminate(); resolve(data); });
+    w.on('error', reject);
+    w.on('exit', (code) => { if (code !== 0) reject(new Error('scan worker exit ' + code)); });
+  }).then((data) => {
+    systemsListCache = data;
+    systemsListBuiltAt = Date.now();
+  });
+}
+function systemsListRefresh() {
+  if (!systemsListJob)
+    systemsListJob = buildSystemsListAsync()
+      .catch((e) => console.error('[systems] scan failed:', e.message))
+      .finally(() => { systemsListJob = null; });
+  return systemsListJob;
+}
+function systemsList() {
+  if (!systemsListCache) return null; // caller awaits systemsListRefresh()
+  if (Date.now() - systemsListBuiltAt > 5 * 60000) systemsListRefresh();
+  return systemsListCache;
+}
+
 async function handleAPI(req, res, url) {
   const p = url.pathname;
+
+  if (req.method === 'POST' && p === '/api/coi-report') {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    console.log('[coi-report]', Buffer.concat(chunks).toString('utf8'));
+    return sendJSON(res, 200, { ok: true });
+  }
 
   if (req.method === 'GET' && p === '/api/config') {
     return sendJSON(res, 200, {
@@ -361,7 +442,10 @@ async function handleAPI(req, res, url) {
     });
   }
   if (req.method === 'GET' && p === '/api/systems') {
-    return sendJSON(res, 200, apiSystems());
+    const list = systemsList();
+    if (list) return sendJSON(res, 200, list);
+    await systemsListRefresh();
+    return sendJSON(res, 200, systemsListCache || []);
   }
   const gameMatch = /^\/api\/systems\/([\w-]+)\/games$/.exec(p);
   if (req.method === 'GET' && gameMatch) {
@@ -476,9 +560,12 @@ const handler = async (req, res) => {
     if (p.startsWith('/api/')) return await handleAPI(req, res, url);
     if (p.startsWith('/emulatorjs/')) return serveDir(res, EMU_DATA, p.slice('/emulatorjs'.length), 'no-cache');
     if (p.startsWith('/retroarch/')) return serveDir(res, RETROARCH, p.slice('/retroarch'.length), 'no-cache');
+    if (p.startsWith('/ppsspp/')) return serveDir(res, PPSSPP, p.slice('/ppsspp'.length), 'no-cache');
+    if (p.startsWith('/ppsspp-player.html')) return serveFile(res, path.join(ROOT, 'public', 'ppsspp-player.html'));
+    if (p.startsWith('/coi-test.html')) return serveFile(res, path.join(ROOT, 'public', 'coi-test.html'));
     if (p.startsWith('/themes/')) return serveDir(res, THEMES, p.slice('/themes'.length), 'public, max-age=600');
     if (p.startsWith('/roms/bios/')) return serveBiosWithFallback(res, p.slice('/roms/bios/'.length));
-    // FBA2012/FBNeo 系街机 zip：集组要求 BIOS 与游戏文件同包——合并 pgm.zip 后流出
+    // FBA2012/FBNeo 系街机 zip：集组要求 BIOS 与游戏文件同包——合并 BIOS zip 后流出
     if (p.startsWith('/roms/') && /\.zip$/i.test(p) && /fbalpha|fbneo/i.test(req.headers.referer || '')) {
       return serveMergedZipRom(res, p);
     }

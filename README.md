@@ -12,8 +12,21 @@
 ## 支持平台
 
 NES · SNES · Mega Drive · PC Engine · GBA · GB · GBC · Game Gear · PS1 · 3DO ·
+**PSP（独立 PPSSPP WASM 引擎）** ·
 街机（FBNeo / Neo Geo / CPS1 / CPS2 / CPS3 / MAME 2003+）· DOS（DOSBox Pure）·
 Atari 2600 / 5200 / 7800 · WonderSwan / Color · Neo Geo Pocket / Color · Virtual Boy · Game & Watch
+
+### PSP 说明
+
+PSP 走 [ppsspp-wasm](https://github.com/root-hunter/ppsspp-wasm) 的独立 PPSSPP 构建
+（`wemu/ppsspp/`），不经过 RetroArch：
+
+- 支持 `.iso` `.cso` `.pbp` `.chd` 镜像，放在 `roms/psp/`（别名 `PSP`）
+- **需要 HTTPS 或 localhost 访问**：PPSSPP 是多线程 WASM，依赖 SharedArrayBuffer
+  （服务器已发 COOP/COEP 头，与手柄的 HTTPS 要求一致）
+- 首次启动较慢：14MB 核心 + 22MB 资产 + 游戏镜像全量下载
+- 存档（memstick/SAVEDATA）、即时存档、ppsspp.ini 设置同样每 30 秒云同步，
+  跟随账号跨设备（Esc 打开 PPSSPP 菜单可改渲染分辨率/贴图过滤等）
 
 ## Docker 部署（推荐）
 
@@ -104,6 +117,7 @@ ROM 放 `wemu/roms/<系统id>/`，或运行后按 F1 网页导入。
 | 主菜单 | F1 / Tab | Start |
 | 设置 | F2 | — |
 | RA 菜单（游戏内） | F1 / Select+X | Select+X |
+| PSP 模拟器菜单（游戏内） | Esc | — |
 | 退出游戏（游戏内） | Esc | Select+Start 双击 |
 
 ## 从源码构建镜像
@@ -131,8 +145,9 @@ make -f Makefile platform=emscripten CC="python <emsdk>/emcc.py" \
 wemu/                  # 可部署应用（Docker 构建上下文）
 ├── server/            # Node 服务：静态托管 + 游戏库 API + 存档同步（零依赖）
 ├── src/               # 前端（TypeScript + vite）：系统轮播 / 游戏列表 / 播放器
-├── public/            # RetroArch WASM 播放器页 / EmulatorJS 播放器页
+├── public/            # RetroArch WASM 播放器页 / EmulatorJS 播放器页 / PPSSPP 播放器页
 ├── retroarch/         # 静态链接的 RetroArch 核心（.js/.wasm）+ 菜单素材 + 着色器
+├── ppsspp/            # PPSSPP 独立 WASM 构建（PSP，PPSSPPSDL.js/.wasm/.data）
 ├── emulator/          # EmulatorJS 4.2.3（备用引擎）
 ├── themes/            # ES-DE 主题（slate / modern / linear）
 ├── roms/              # 游戏库（部署时挂载，不入库）

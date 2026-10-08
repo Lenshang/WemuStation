@@ -8,7 +8,7 @@ import { InputManager } from './input/input';
 import { renderSystemView } from './views/systemview';
 import { renderGamelistView, type GamelistRefs } from './views/gamelistview';
 import { SearchPanel } from './views/searchpanel';
-import { launchGame, type PlayerHandle } from './views/player';
+import { launchGame, type PlayerHandle, type PlayerEngine } from './views/player';
 import { openSettingsPanel } from './views/settings';
 import { MainMenuPanel } from './views/mainmenu';
 
@@ -26,9 +26,18 @@ const EJS_CORES: Record<string, string> = {
 // RetroArch statically-linked core names (must match /retroarch/*.js builds)
 const RA_CORES: Record<string, string> = {
   nes: 'fceumm',
+  n64: 'mupen64plus_next',
+  nds: 'melonds',
   snes: 'snes9x',
   megadrive: 'genesis_plus_gx',
   pcengine: 'mednafen_pce',
+  pcenginecd: 'mednafen_pce',
+  segacd: 'genesis_plus_gx',
+  sega32x: 'picodrive',
+  sg1000: 'genesis_plus_gx',
+  pc98: 'np2kai',
+  msx2: 'bluemsx',
+  lynx: 'handy',
   gba: 'mgba',
   gb: 'gambatte',
   psx: 'pcsx_rearmed',
@@ -36,6 +45,7 @@ const RA_CORES: Record<string, string> = {
   gamegear: 'genesis_plus_gx',
   fbneo: 'fbalpha2012',
   neogeo: 'fbneo',
+  neogeocd: 'neocd',
   cps1: 'fbneo',
   cps2: 'fbneo',
   cps3: 'fbneo',
@@ -56,9 +66,18 @@ const RA_CORES: Record<string, string> = {
 // 每系统的备选 RA 核心（首个为默认）。玩家可在主菜单切换。
 const SYSTEM_CORES: Record<string, string[]> = {
   nes: ['fceumm', 'nestopia'],
+  n64: ['mupen64plus_next'],
+  nds: ['melonds'],
   snes: ['snes9x', 'snes9x2010', 'snes9x2005'],
   megadrive: ['genesis_plus_gx', 'picodrive'],
   pcengine: ['mednafen_pce', 'mednafen_pce_fast', 'geargrafx'],
+  pcenginecd: ['mednafen_pce'],
+  segacd: ['genesis_plus_gx', 'picodrive'],
+  sega32x: ['picodrive'],
+  sg1000: ['genesis_plus_gx'],
+  pc98: ['np2kai'],
+  msx2: ['bluemsx'],
+  lynx: ['handy'],
   gba: ['mgba', 'vba_next'],
   gb: ['gambatte', 'gearboy', 'doublecherrygb'],
   psx: ['pcsx_rearmed'],
@@ -66,6 +85,7 @@ const SYSTEM_CORES: Record<string, string[]> = {
   gamegear: ['genesis_plus_gx', 'gearsystem'],
   sms: ['gearsystem', 'genesis_plus_gx'],
   neogeo: ['fbalpha2012_neogeo', 'fbalpha2012', 'fbneo'],
+  neogeocd: ['neocd'],
   fbneo: ['fbalpha2012', 'fbneo'],
   cps1: ['fbalpha2012_cps1', 'fbalpha2012'],
   cps2: ['fbalpha2012_cps2', 'fbalpha2012'],
@@ -88,10 +108,13 @@ const CORE_LABELS: Record<string, string> = {
   snes9x: 'Snes9x（推荐）', snes9x2010: 'Snes9x 2010', snes9x2005: 'Snes9x 2005', snes9x2002: 'Snes9x 2002',
   genesis_plus_gx: 'Genesis Plus GX', picodrive: 'Picodrive',
   mednafen_pce: 'Beetle PCE', mednafen_pce_fast: 'Beetle PCE Fast', geargrafx: 'Geargrafx',
+  handy: 'Handy（Lynx）', bluemsx: 'blueMSX', np2kai: 'Neko Project II Kai',
+  mupen64plus_next: 'Mupen64Plus-Next', melonds: 'melonDS',
   mgba: 'mGBA（推荐）', vba_next: 'VBA Next',
   gambatte: 'Gambatte（推荐）', gearboy: 'Gearboy', doublecherrygb: 'DoubleCherryGB',
   pcsx_rearmed: 'PCSX ReARMed',
   fbalpha2012: 'FB Alpha 2012', fbneo: 'FBNeo（新版）',
+  neocd: 'NeoGeo CD（NeoCD）',
   fbalpha2012_neogeo: 'FB Alpha 2012 NeoGeo', fbalpha2012_cps1: 'FB Alpha 2012 CPS1', fbalpha2012_cps2: 'FB Alpha 2012 CPS2', fbalpha2012_cps3: 'FB Alpha 2012 CPS3',
   mame2003_plus: 'MAME 2003 Plus', mame2003: 'MAME 2003', mame2000: 'MAME 2000',
   mednafen_ngp: 'Beetle NeoPop', mednafen_vb: 'Beetle VB', mednafen_wswan: 'Beetle WonderSwan',
@@ -104,6 +127,12 @@ function coreLabel(coreId: string): string {
   return CORE_LABELS[coreId] || coreId;
 }
 
+// 走专用 wasm 引擎（非 RetroArch / EmulatorJS）的系统。PSP 用独立的
+// PPSSPP 构建（RetroArch 没有 PSP 核心，EmulatorJS 也没有）。
+const SPECIAL_ENGINES: Record<string, PlayerEngine> = {
+  psp: 'ppsspp'
+};
+
 const ROM_EXTENSIONS: Record<string, string[]> = {
   nes: ['nes', 'fds', 'unf', 'unif', 'zip', '7z'],
   snes: ['smc', 'sfc', 'swc', 'fig', 'zip', '7z'],
@@ -112,6 +141,7 @@ const ROM_EXTENSIONS: Record<string, string[]> = {
   gba: ['gba', 'zip', '7z'],
   gb: ['gb', 'gbc', 'zip', '7z'],
   psx: ['bin', 'cue', 'pbp', 'chd', 'iso', 'img', 'zip', '7z'],
+  psp: ['iso', 'cso', 'pbp', 'chd', 'elf'],
   gbc: ['gbc', 'cgb', 'zip', '7z'],
   gamegear: ['gg', 'bin', 'zip', '7z'],
   fbneo: ['zip', '7z'],
@@ -173,6 +203,7 @@ export class App {
       if (!this.systems.length) throw new Error('没有可用的系统（ROM 目录为空？）');
       this.unhideSplashText();
       void this.probeRetroarchCores();
+      void this.loadGraphicsAssets();
       await this.loadSystemTheme(this.systems[this.sysIdx]);
       this.input.on((btn, rawKey) => this.handleInput(btn, rawKey));
       this.input.onExitCombo = () => this.handleExitCombo();
@@ -228,8 +259,58 @@ export class App {
   private soundsLoadedFor = '';
   private mainMenu: MainMenuPanel | null = null;
 
-  private openMainMenu() {
+  // 画面设置资源:着色器预设清单(含中文名)/遮罩 cfg 清单
+  shaderFiles: { path: string; cn: string }[] = [];
+  overlayList: string[] = [];
+  graphicsCurrent = { shader: '', overlay: '' };
+
+  private async cfgGet(path: string): Promise<Uint8Array | null> {
+    const r = await fetch('/api/storage/get?ns=cfg&path=' + encodeURIComponent(path), { cache: 'no-cache' });
+    if (!r.ok) return null;
+    return new Uint8Array(await r.arrayBuffer());
+  }
+
+  private async cfgPut(path: string, data: Uint8Array): Promise<void> {
+    await fetch('/api/storage/put?ns=cfg&path=' + encodeURIComponent(path), { method: 'POST', body: new Blob([data as BlobPart]) });
+  }
+
+  private async loadGraphicsAssets() {
+    try {
+      const presets: { asciiPath: string; cnName: string }[] = await (await fetch('/retroarch/shaders/presets.json', { cache: 'no-cache' })).json();
+      const man: string[] = await (await fetch('/retroarch/shaders/manifest.json', { cache: 'no-cache' })).json();
+      const cn = new Map<string, string>();
+      for (const p of presets) cn.set(p.asciiPath, p.cnName);
+      this.shaderFiles = man
+        .filter((f) => f.endsWith('.glslp'))
+        .map((f) => ({ path: f, cn: cn.get(f) || '' }));
+    } catch { /* 无着色器包 */ }
+    try {
+      const man: string[] = await (await fetch('/retroarch/overlays/manifest.json', { cache: 'no-cache' })).json();
+      this.overlayList = man.filter((f) => f.endsWith('.cfg'));
+    } catch { /* 无遮罩包 */ }
+  }
+
+  /** 读取当前系统 per-system cfg 里的着色器/遮罩设置(菜单打开时刷新) */
+  private async refreshGraphicsCurrent() {
+    const sys = this.systems[this.sysIdx];
+    if (!sys) return;
+    try {
+      const bytes = await this.cfgGet('/per-system/' + sys.id.replace(/[^\w.\-]+/g, '_') + '.cfg');
+      if (!bytes) { this.graphicsCurrent = { shader: '', overlay: '' }; return; }
+      const txt = new TextDecoder().decode(bytes);
+      const get = (k: string) => { const m = new RegExp('(?:^|\\n)' + k + ' = "([^"]*)"').exec(txt); return m ? m[1] : ''; };
+      const shader = get('video_shader').replace(/^\/home\/web_user\/retroarch\/system\/shaders\//, '');
+      // RA 1.22 的遮罩主键是 input_overlay(video_overlay 旧键已不存在),
+      // 回退读旧键只为兼容本前端旧版本写入的残留配置
+      const overlay = (get('input_overlay') || get('video_overlay'))
+        .replace(/^\/home\/web_user\/retroarch\/system\/overlays\//, '');
+      this.graphicsCurrent = { shader, overlay };
+    } catch { /* ignore */ }
+  }
+
+  private async openMainMenu() {
     if (this.mainMenu?.isOpen()) return;
+    await this.refreshGraphicsCurrent();
     this.mainMenu = new MainMenuPanel(this.root, this.input, {
       openSettings: () => this.openSettings(),
       openRAMainMenu: () => this.openRAMainMenu(),
@@ -260,6 +341,55 @@ export class App {
         await this.renderSystem('view-fade-in');
         this.toast(`主题已切换：${t}`);
       },
+      graphicsChoices: (function (self: App) {
+        const cfgPath = (sysId: string) => '/per-system/' + sysId.replace(/[^\w.\-]+/g, '_') + '.cfg';
+        // 简易 cfg 行编辑:仅替换已存在的键或追加到末尾
+        const getVal = (txt: string, key: string): string => {
+          const m = new RegExp('(?:^|\\n)' + key + ' = "([^"]*)"').exec(txt);
+          return m ? m[1] : '';
+        };
+        const setVal = (txt: string, key: string, val: string): string => {
+          const re = new RegExp('(?:^|\\n)(' + key + ' = ")[^"]*(")');
+          if (re.test(txt)) return txt.replace(re, (m, a, b) => (m.startsWith('\n') ? '\n' : '') + a + val + b);
+          return txt.replace(/\s*$/, '\n') + key + ' = "' + val + '"\n';
+        };
+        return {
+          shaderFiles: self.shaderFiles,
+          overlayFiles: self.overlayList,
+          current: self.graphicsCurrent,
+          pick: async (kind: 'shader' | 'overlay', value: string) => {
+            const sys = self.systems[self.sysIdx];
+            if (!sys) return;
+            // 当前系统尚未有过 per-system 配置时,用全局配置播种一份
+            let txt = '';
+            {
+              const bytes = await self.cfgGet(cfgPath(sys.id));
+              if (bytes) txt = new TextDecoder().decode(bytes);
+              else {
+                const g = await self.cfgGet('/userdata/retroarch.cfg');
+                txt = g ? new TextDecoder().decode(g) : '';
+              }
+            }
+            if (kind === 'shader') {
+              txt = setVal(txt, 'video_shader', '/home/web_user/retroarch/system/shaders/' + value);
+              txt = setVal(txt, 'video_shader_enable', value ? 'true' : 'false');
+            } else {
+              // 必须写 input_overlay:RA 1.22 构建里已没有 video_overlay 键,
+              // 写旧键 RA 启动时读不到,遮罩永远不生效
+              txt = setVal(txt, 'input_overlay', value ? '/home/web_user/retroarch/system/overlays/' + value : '');
+              txt = setVal(txt, 'input_overlay_enable', value ? 'true' : 'false');
+            }
+            await self.cfgPut(cfgPath(sys.id), new TextEncoder().encode(txt));
+            if (kind === 'shader') {
+              self.graphicsCurrent.shader = value;
+              self.toast(value ? '着色器已保存，重启游戏生效' : '着色器已关闭，重启游戏生效');
+            } else {
+              self.graphicsCurrent.overlay = value;
+              self.toast(value ? '遮罩已保存，重启游戏生效' : '遮罩已关闭，重启游戏生效');
+            }
+          }
+        };
+      })(this),
       currentSystem: this.systems[this.sysIdx]
     });
   }
@@ -274,7 +404,7 @@ export class App {
 
   /** real systems + virtual collections (recent / favorites) into one carousel */
   private async loadSystems() {
-    const base = (await api.systems()).filter((s) => EJS_CORES[s.id] || RA_CORES[s.id]);
+    const base = (await api.systems()).filter((s) => EJS_CORES[s.id] || RA_CORES[s.id] || SPECIAL_ENGINES[s.id]);
     try {
       this.favoriteGames = await api.favoriteGames();
       this.recentGames = await api.recentGames();
@@ -580,9 +710,11 @@ export class App {
     if (!sys || !game) return;
     // favorites/recent entries carry their real system id
     const coreId = game.sysId || sys.id;
+    // PSP 等专用引擎系统：走独立 PPSSPP wasm（RetroArch 无 PSP 核心，EJS 也没有）
+    const engine: PlayerEngine = SPECIAL_ENGINES[coreId] ?? this.playerEngine;
     const raCore = this.selectedRaCore(coreId);
     const ejsCore = EJS_CORES[coreId];
-    let core = this.playerEngine === 'retroarch' ? raCore : ejsCore;
+    let core = engine === 'retroarch' ? raCore : engine === 'ppsspp' ? 'ppsspp' : ejsCore;
     if (!core) {
       // RA 引擎缺核心但 EJS 有 → 自动回退 EJS
       if (ejsCore) {
@@ -592,7 +724,7 @@ export class App {
       this.toast(`暂不支持 ${sys.fullName}`);
       return;
     }
-    if (this.playerEngine === 'retroarch' && !this.retroarchAvailable.has(core)) {
+    if (engine === 'retroarch' && !this.retroarchAvailable.has(core)) {
       if (!ejsCore) {
         this.toast(`RetroArch 核心尚未构建，且 ${sys.fullName} 无 EmulatorJS 备选`);
         return;
@@ -603,7 +735,7 @@ export class App {
     this.sounds.play('launch');
     this.screen = 'game';
     document.body.classList.add('in-game'); // hide help bar + gear button
-    this.player = launchGame(this.root, sys, game, core, this.playerEngine, () => this.exitGame());
+    this.player = launchGame(this.root, sys, game, core, engine, () => this.exitGame());
     // record in the server-side "recently played" list (fire and forget)
     void api.recentAdd({
       sysId: coreId,
@@ -617,9 +749,11 @@ export class App {
       this.recentGames.unshift({ ...game, sysId: coreId, ts: Date.now() } as GameEntry);
       this.recentGames = this.recentGames.slice(0, 50);
     }).catch(() => {});
-    this.toast(this.playerEngine === 'retroarch'
-      ? 'Select+Start 退出 · Select+X 呼出 RA 菜单'
-      : 'Esc 退出游戏（手柄 Start+Select）');
+    this.toast(engine === 'ppsspp'
+      ? 'Esc 呼出 PSP 菜单 · 手柄 Select+Start 退出'
+      : engine === 'retroarch'
+        ? 'Select+Start 退出 · Select+X 呼出 RA 菜单'
+        : 'Esc 退出游戏（手柄 Start+Select）');
   }
 
   /** Boot RetroArch straight into its main menu (settings), no game loaded. */
@@ -659,8 +793,14 @@ export class App {
     }
     document.body.classList.remove('in-game');
     this.screen = 'gamelist';
-    // rebuild gamelist (player overlay was on top)
-    this.enterGamelist();
+    // 退出后列表保留原选中项(renderGamelist 默认会重置到第一项)
+    const resumeIdx = this.gameIdx;
+    void this.enterGamelist().then(() => {
+      if (this.gamelistRefs && this.games[resumeIdx]) {
+        this.gameIdx = resumeIdx;
+        this.gamelistRefs.updateSelection(resumeIdx);
+      }
+    });
   }
 
   // ---------- settings / menus ----------

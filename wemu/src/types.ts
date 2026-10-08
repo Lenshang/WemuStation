@@ -27,6 +27,8 @@ export interface GameEntry {
   lastplayed: string;
   size: number;
   url: string;
+  /** 收藏/最近游玩条目携带真实系统 id(与列表所在系统可不同) */
+  sysId?: string;
 }
 
 export interface AppConfig {

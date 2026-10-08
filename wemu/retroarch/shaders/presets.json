@@ -1,0 +1,92 @@
+[
+ {
+  "asciiPath": "crt/crt-01.glslp",
+  "cnName": "扫描线-pi-vertical",
+  "group": "crt"
+ },
+ {
+  "asciiPath": "crt/crt-02.glslp",
+  "cnName": "扫描线-pi",
+  "group": "crt"
+ },
+ {
+  "asciiPath": "crt/crt-03.glslp",
+  "cnName": "扫描线-scanline",
+  "group": "crt"
+ },
+ {
+  "asciiPath": "crt/crt-04.glslp",
+  "cnName": "扫描线-zfast-crt",
+  "group": "crt"
+ },
+ {
+  "asciiPath": "crt/crt-05.glslp",
+  "cnName": "球面摩尔纹-geom",
+  "group": "crt"
+ },
+ {
+  "asciiPath": "crt/crt-06.glslp",
+  "cnName": "球面摩尔纹-lottes-fast",
+  "group": "crt"
+ },
+ {
+  "asciiPath": "crt/crt-07.glslp",
+  "cnName": "球面摩尔纹老化-yo6-KV-M1420B-fast",
+  "group": "crt"
+ },
+ {
+  "asciiPath": "crt/crt-08.glslp",
+  "cnName": "辉光效果-cgwg-fast",
+  "group": "crt"
+ },
+ {
+  "asciiPath": "crt/crt-09.glslp",
+  "cnName": "辉光效果-easymode",
+  "group": "crt"
+ },
+ {
+  "asciiPath": "crt/crt-10.glslp",
+  "cnName": "辉光效果-smuberstep-glow",
+  "group": "crt"
+ },
+ {
+  "asciiPath": "lcd/lcd-01.glslp",
+  "cnName": "dot",
+  "group": "lcd"
+ },
+ {
+  "asciiPath": "lcd/lcd-02.glslp",
+  "cnName": "lcd-shader",
+  "group": "lcd"
+ },
+ {
+  "asciiPath": "lcd/lcd-03.glslp",
+  "cnName": "lcd-点阵-v2",
+  "group": "lcd"
+ },
+ {
+  "asciiPath": "lcd/lcd-04.glslp",
+  "cnName": "lcd-点阵",
+  "group": "lcd"
+ },
+ {
+  "asciiPath": "lcd/lcd-05.glslp",
+  "cnName": "lcd1x",
+  "group": "lcd"
+ },
+ {
+  "asciiPath": "lcd/lcd-06.glslp",
+  "cnName": "lcd3x",
+  "group": "lcd"
+ },
+ {
+  "asciiPath": "aa/aa-01.glslp",
+  "cnName": "advanced-aa",
+  "group": "aa"
+ },
+ {
+  "asciiPath": "aa/aa-02.glslp",
+  "cnName": "fxaa",
+  "group": "aa"
+ }
+]

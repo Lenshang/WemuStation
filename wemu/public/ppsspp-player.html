@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>WemuStation PSP Player</title>
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+    #canvas { width: 100%; height: 100%; display: block; }
+    #loading {
+      position: absolute; inset: 0; display: flex; flex-direction: column; gap: 12px;
+      align-items: center; justify-content: center; color: #9ca3af;
+      font-family: "Segoe UI", system-ui, sans-serif; font-size: 15px;
+      background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0f 70%);
+      z-index: 10; transition: opacity .4s; padding: 0 24px; text-align: center;
+    }
+    #loading.hide { opacity: 0; pointer-events: none; }
+    .spin { width: 34px; height: 34px; border: 3px solid #374151; border-top-color: #a78bfa; border-radius: 50%; animation: sp 1s linear infinite; }
+    @keyframes sp { to { transform: rotate(360deg); } }
+    #loading .hint { font-size: 12px; color: #4b5563; max-width: 560px; line-height: 1.6; }
+  </style>
+</head>
+
+<body>
+  <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
+  <div id="loading"><div class="spin"></div><div id="loading-text">正在启动 PPSSPP…</div>
+    <div class="hint">PSP 首次启动较慢（编译 14MB 核心 + 下载镜像），请耐心等待。<br>启动后点击画面可获得键盘焦点 · Esc 呼出 PSP 模拟器菜单</div>
+  </div>
+  <script type="module">
+    // Standalone PPSSPP (wasm) player shell — PSP support without a RetroArch
+    // core. Built from root-hunter/ppsspp-wasm (PPSSPPSDL emscripten port):
+    //   - PPSSPPSDL.js is a CLASSIC script merging with window.Module; it
+    //     self-fetches PPSSPPSDL.wasm + PPSSPPSDL.data (assets) via locateFile
+    //   - pthreads build: needs SharedArrayBuffer → server sends COOP/COEP;
+    //     abort with a clear message when the page is not cross-origin isolated
+    //   - game file is streamed into the VFS at /games/<name> and passed as
+    //     the only command line argument (PPSSPP boots straight into it)
+    //   - config + saves live under /home/web_user/.config/ppsspp (ini in
+    //     PSP/SYSTEM, saves in memstick) — synced to the server storage API
+    //     (ns 'cfg', path prefix /ppsspp/) every 30s, on flush request and on
+    //     pagehide, same protocol the RetroArch shell speaks
+    const q = new URLSearchParams(location.search);
+    const gameUrl = q.get('game');
+    const gameName = q.get('name') || 'game';
+
+    const loadingText = document.getElementById('loading-text');
+    const logs = [];
+    const pushLog = (t) => { logs.push(t); if (logs.length > 300) logs.shift(); window.__ppsspplocal = logs; try { parent.postMessage({ type: 'ra-log', line: '[ppsspp] ' + t }, '*'); } catch {} };
+    const report = (type, message) => parent.postMessage({ type, message }, '*');
+
+    // ---- cross-origin isolation gate (pthreads need SharedArrayBuffer) ----
+    if (!window.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
+      loadingText.innerHTML = '无法启动 PSP：当前页面没有启用 SharedArrayBuffer。<br>' +
+        'PSP 模拟器是多线程 WASM，需要 <b>HTTPS</b> 或 localhost 访问（与手柄要求一致）。<br>' +
+        '<span style="color:#6b7280">当前地址：' + location.origin + '</span>';
+      loadingText.style.color = '#f87171';
+      throw new Error('SharedArrayBuffer unavailable (crossOriginIsolated=false)');
+    }
+
+    // ---- gamepad index normalization (same shim as retroarch-player) ----
+    // SDL reads the Gamepad API directly; presenting exactly one pad at a
+    // stable index 0 keeps the mapping immune to Chromium's monotonic
+    // reconnection index drift.
+    (function normalizeGamepads() {
+      const realGet = navigator.getGamepads && navigator.getGamepads.bind(navigator);
+      if (!realGet) return;
+      let mainIdx = null;
+      const clone = {
+        index: 0, id: '', connected: false, mapping: 'standard',
+        axes: [0, 0, 0, 0], timestamp: 0, vibrationActuator: null,
+        buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 }))
+      };
+      function sync() {
+        let pads;
+        try { pads = realGet(); } catch (e) { return; }
+        if (mainIdx === null || !pads[mainIdx]) {
+          mainIdx = null;
+          for (let i = 0; i < pads.length; i++) if (pads[i]) { mainIdx = i; break; }
+          if (mainIdx === null) { clone.connected = false; return; }
+        }
+        const p = pads[mainIdx];
+        clone.connected = true;
+        clone.id = p.id;
+        clone.timestamp = p.timestamp;
+        for (let b = 0; b < clone.buttons.length; b++) {
+          const src = b < p.buttons.length ? p.buttons[b] : null;
+          clone.buttons[b].pressed = !!(src && src.pressed);
+          clone.buttons[b].value = src ? src.value : 0;
+        }
+        for (let a = 0; a < clone.axes.length; a++)
+          clone.axes[a] = a < p.axes.length ? p.axes[a] : 0;
+      }
+      navigator.getGamepads = function () {
+        sync();
+        return [clone, null, null, null];
+      };
+      // SDL attaches its own connect listeners late — keep announcing until
+      // the runtime has been up for a while
+      let tries = 0;
+      setInterval(() => {
+        const was = clone.connected;
+        sync();
+        if (clone.connected && !was && tries < 200) {
+          tries++;
+          try { window.dispatchEvent(new Event('gamepadconnected')); } catch { /* ignore */ }
+        }
+      }, 500);
+    })();
+
+    // ---- server-side storage sync (same API as the RetroArch shell) ----
+    // PPSSPP root inside the VFS; ini + memstick saves all live under it
+    const PPSSPP_ROOT = '/home/web_user/.config/ppsspp';
+    const SERVER_PREFIX = '/ppsspp/'; // ns 'cfg' path prefix → <root>/...
+    const serverList = async (ns) => {
+      const r = await fetch('/api/storage/list?ns=' + ns, { cache: 'no-cache' });
+      return r.ok ? r.json() : [];
+    };
+    const serverGet = async (ns, p) => {
+      const r = await fetch('/api/storage/get?ns=' + ns + '&path=' + encodeURIComponent(p), { cache: 'no-cache' });
+      if (!r.ok) return null;
+      return new Uint8Array(await r.arrayBuffer());
+    };
+    const serverPut = async (ns, p, data) => {
+      try {
+        const body = data instanceof Uint8Array ? new Blob([data]) : data;
+        await fetch('/api/storage/put?ns=' + ns + '&path=' + encodeURIComponent(p), { method: 'POST', body });
+      } catch (e) { console.warn('server put failed', p, e); }
+    };
+
+    // 失败安全（与 retroarch-player 同款）：恢复失败时禁用上传，防止用
+    // 残缺/预设内容覆盖服务器上的真实存档
+    let serverRestoreFailed = false;
+    const serverFiles = {};
+    try {
+      const listing = await serverList('cfg');
+      const mine = listing.filter((it) => it.path.startsWith(SERVER_PREFIX));
+      loadingText.textContent = `正在从服务器恢复存档… (0/${mine.length})`;
+      let done = 0;
+      for (const item of mine) {
+        const rel = item.path.slice(SERVER_PREFIX.length);
+        const data = await serverGet('cfg', item.path);
+        if (data) serverFiles[PPSSPP_ROOT + '/' + rel] = data;
+        done++;
+        loadingText.textContent = `正在从服务器恢复存档… (${done}/${mine.length})`;
+      }
+      pushLog('server files restored: ' + Object.keys(serverFiles).length);
+    } catch (e) {
+      serverRestoreFailed = true;
+      pushLog('restore-THROW: ' + (e && (e.message || String(e)) || 'unknown'));
+      report('ra-sync-warning', '存档同步失败：本次会话为只读模式，改动不会被保存');
+    }
+
+    // ---- audio: ScriptProcessor → AudioWorklet polyfill ----
+    // Chrome 126+ 的原生 ScriptProcessorNode 在 SDL 的用法下 onaudioprocess
+    // 可能永不触发（ppsspp-wasm 项目实测），全局打补丁换成 AudioWorklet 垫片。
+    const audioDebug = { callbacks: 0, nonsilent: 0, peak: 0, rate: 0, underruns: 0 };
+    const SP_SHIM_WORKLET = `
+class PPSSPPSpShim extends AudioWorkletProcessor {
+  constructor(opts) {
+    super(opts);
+    const p = opts.processorOptions || {};
+    this._nCh = p.channels || 2;
+    this._cap = p.cap || 65536;
+    this._ctrl = new Int32Array(p.sab, 0, 8);
+    this._data = new Float32Array(p.sab, 32, this._cap * this._nCh);
+    this._last = new Float32Array(this._nCh);
+    this._ramp = 0;
+    this._rampFrames = 128;
+    this._tick = 0;
+  }
+  process(inputs, outputs) {
+    const ch = outputs[0];
+    if (!ch || !ch[0]) return true;
+    const n = ch[0].length;
+    let r = Atomics.load(this._ctrl, 1);
+    const w = Atomics.load(this._ctrl, 0);
+    const avail = (w - r + this._cap) % this._cap;
+    const read = Math.min(n, avail);
+    let ramp = this._ramp;
+    for (let i = 0; i < read; i++) {
+      const blend = ramp > 0 ? 1.0 - ramp / this._rampFrames : 1.0;
+      for (let c = 0; c < ch.length; c++) {
+        const src = this._data[r * this._nCh + Math.min(c, this._nCh - 1)];
+        const out = ramp > 0 ? this._last[c] * (1.0 - blend) + src * blend : src;
+        ch[c][i] = out;
+        this._last[c] = out;
+      }
+      if (ramp > 0) ramp--;
+      r = (r + 1) % this._cap;
+    }
+    this._ramp = ramp;
+    if (read < n) {
+      Atomics.add(this._ctrl, 4, 1);
+      this._ramp = this._rampFrames;
+      for (let i = read; i < n; i++) {
+        for (let c = 0; c < ch.length; c++) {
+          this._last[c] *= 0.985;
+          ch[c][i] = Math.abs(this._last[c]) < 0.00001 ? 0 : this._last[c];
+        }
+      }
+    }
+    Atomics.store(this._ctrl, 1, r);
+    Atomics.add(this._ctrl, 2, read);
+    return true;
+  }
+}
+registerProcessor('ppsspp-sp-shim', PPSSPPSpShim);
+`;
+    const _spModuleCtxSet = new Set();
+    const _spModulePending = new Map();
+    async function ensureSpShimModule(ctx) {
+      if (_spModuleCtxSet.has(ctx)) return true;
+      if (_spModulePending.has(ctx)) return _spModulePending.get(ctx);
+      const p = (async () => {
+        try {
+          const blob = new Blob([SP_SHIM_WORKLET], { type: 'application/javascript' });
+          const url = URL.createObjectURL(blob);
+          await ctx.audioWorklet.addModule(url);
+          URL.revokeObjectURL(url);
+          _spModuleCtxSet.add(ctx);
+          pushLog('audio: SP→worklet shim module loaded');
+          return true;
+        } catch (e) {
+          pushLog('audio: SP shim module failed: ' + (e?.message || e));
+          return false;
+        }
+      })();
+      _spModulePending.set(ctx, p);
+      return p;
+    }
+    function makeScriptProcessorShim(ctx, bufferSize, nIn, nOut) {
+      const nCh = Math.max(1, nOut || 2);
+      const bufsz = bufferSize || 2048;
+      const SR = ctx.sampleRate || 44100;
+      const RING_CAP = 32768;
+      const LOOKAHEAD = Math.max(SR * 0.070, bufsz * 2);
+      const MAX_FILL = Math.max(SR * 0.180, bufsz * 5);
+      const MAX_BURST = 16;
+
+      let _handler = null, _wn = null, _gain = null, _dest = null, _timerId = null;
+      let _fakeBuf = null, _fakeChannels = [], _ctrl = null, _data = null;
+
+      let _playheadStartTime = 0, _producedFrames = 0;
+      let _lastUnderruns = 0, _adaptiveExtra = 0, _lastUnderrunTime = 0;
+
+      try {
+        _fakeBuf = ctx.createBuffer(nCh, bufsz, SR);
+        _fakeChannels = Array.from({ length: nCh }, (_, c) => _fakeBuf.getChannelData(c));
+      } catch (e) { /* ignore */ }
+
+      function pushOne() {
+        if (!_handler || !_fakeBuf || !_wn || !_ctrl || !_data) return false;
+        let w = Atomics.load(_ctrl, 0);
+        const r = Atomics.load(_ctrl, 1);
+        const used = (w - r + RING_CAP) % RING_CAP;
+        const free = RING_CAP - 1 - used;
+        if (bufsz > free) return false;
+        try { _handler({ outputBuffer: _fakeBuf }); } catch (e) { return false; }
+        for (let i = 0; i < bufsz; i++) {
+          for (let c = 0; c < nCh; c++) {
+            _data[w * nCh + c] = _fakeChannels[c][i];
+          }
+          w = (w + 1) % RING_CAP;
+        }
+        audioDebug.callbacks++;
+        audioDebug.rate = SR;
+        Atomics.store(_ctrl, 0, w);
+        _producedFrames += bufsz;
+        return true;
+      }
+
+      function resetPlayhead(now) {
+        _playheadStartTime = now || ctx.currentTime || 0;
+        _producedFrames = 0;
+      }
+
+      function pump() {
+        if (ctx.state !== 'running' || !_handler || !_wn) return;
+        if (!_playheadStartTime) resetPlayhead(ctx.currentTime);
+
+        const underruns = Atomics.load(_ctrl, 4);
+        if (underruns !== _lastUnderruns) {
+          _lastUnderruns = underruns;
+          _lastUnderrunTime = ctx.currentTime;
+          _adaptiveExtra = Math.min(SR * 0.120, _adaptiveExtra + bufsz);
+          audioDebug.underruns = underruns;
+        } else if (_adaptiveExtra > 0 && ctx.currentTime - _lastUnderrunTime > 3.0) {
+          _adaptiveExtra = Math.max(0, _adaptiveExtra - bufsz * 0.25);
+        }
+
+        const writePos = Atomics.load(_ctrl, 0);
+        const readPos = Atomics.load(_ctrl, 1);
+        const ringFill = (writePos - readPos + RING_CAP) % RING_CAP;
+        const targetFill = LOOKAHEAD + _adaptiveExtra;
+        const maxFill = MAX_FILL + _adaptiveExtra;
+        if (ringFill > maxFill) return;
+
+        let elapsedFrames = Math.max(0, Math.floor((ctx.currentTime - _playheadStartTime) * SR));
+        if (_producedFrames < elapsedFrames - maxFill) {
+          resetPlayhead(ctx.currentTime);
+          elapsedFrames = 0;
+        }
+        const targetProducedFrames = elapsedFrames + targetFill;
+        const maxProducedFrames = elapsedFrames + maxFill;
+
+        let n = 0;
+        while (
+          _producedFrames + bufsz <= targetProducedFrames &&
+          _producedFrames + bufsz <= maxProducedFrames &&
+          ringFill + n * bufsz < maxFill &&
+          n < MAX_BURST
+        ) {
+          if (!pushOne()) break;
+          n++;
+        }
+      }
+
+      function startPump() {
+        if (_timerId) return;
+        pump();
+        _timerId = setInterval(pump, 2);
+        pushLog('audio SP-shim: pump started (bufsz=' + bufsz + ' SR=' + SR + ')');
+      }
+
+      function tryFinalize() {
+        if (!_wn || !_dest) return;
+        _gain = ctx.createGain();
+        _gain.gain.value = 1.0;
+        _wn.connect(_gain);
+        _gain.connect(_dest);
+        if (_handler) startPump();
+        pushLog('audio SP-shim: connected to destination');
+      }
+
+      (async () => {
+        const ok = await ensureSpShimModule(ctx);
+        if (!ok) return;
+        try {
+          const sab = new SharedArrayBuffer(32 + RING_CAP * nCh * 4);
+          _ctrl = new Int32Array(sab, 0, 8);
+          _data = new Float32Array(sab, 32, RING_CAP * nCh);
+          _wn = new AudioWorkletNode(ctx, 'ppsspp-sp-shim', {
+            numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [nCh],
+            processorOptions: { channels: nCh, cap: RING_CAP, sab },
+          });
+          _wn.onprocessorerror = (e) => pushLog('audio: SP shim processor error');
+          tryFinalize();
+        } catch (e) {
+          pushLog('audio: SP shim AudioWorkletNode failed: ' + (e?.message || e));
+        }
+      })();
+
+      return {
+        get onaudioprocess() { return _handler; },
+        set onaudioprocess(fn) {
+          _handler = fn;
+          if (_wn && _dest && !_timerId) startPump();
+        },
+        connect(dest) { _dest = dest; tryFinalize(); },
+        disconnect() {
+          if (_timerId) { clearInterval(_timerId); _timerId = null; }
+          try { if (_gain) _gain.disconnect(); } catch (e) {}
+          try { if (_wn) _wn.disconnect(); } catch (e) {}
+        },
+        addEventListener() {},
+        removeEventListener() {},
+      };
+    }
+    async function installScriptProcessorPolyfill(ctx) {
+      if (!ctx || !ctx.audioWorklet) return;
+      await ensureSpShimModule(ctx);
+      const proto = AudioContext.prototype;
+      if (proto._wemuSpPatched) return;
+      proto._wemuSpPatched = true;
+      proto.createScriptProcessor = function (bufSize, nIn, nOut) {
+        pushLog('audio: createScriptProcessor → worklet shim (bufSz=' + bufSize + ')');
+        return makeScriptProcessorShim(this, bufSize, nIn, nOut);
+      };
+    }
+
+    const preAudioCtx = new AudioContext({ latencyHint: 'interactive' });
+    // 不能 await resume()：无用户手势时该 promise 会永远挂起（Chrome 把它
+    // 挂到"允许播放"事件上），整个启动流程会被卡死。恢复交给下面的自愈循环。
+    try { preAudioCtx.resume().catch(() => {}); } catch { /* ignore */ }
+    // polyfill 安装也加超时保护：audioWorklet 在极端环境下可能不响应
+    await Promise.race([
+      installScriptProcessorPolyfill(preAudioCtx),
+      new Promise((r) => setTimeout(r, 3000)),
+    ]);
+    // 自动播放策略自愈：iframe 内首次交互前 AudioContext 可能是 suspended，
+    // 恢复后 SDL 垫片自动出声（pump 在 state==='running' 前只是空转）
+    const resumeAudio = () => {
+      if (preAudioCtx.state !== 'running') preAudioCtx.resume().catch(() => {});
+      else clearInterval(audioHeal);
+    };
+    for (const ev of ['keydown', 'pointerdown', 'touchstart', 'mousedown'])
+      window.addEventListener(ev, resumeAudio, { passive: true });
+    const audioHeal = setInterval(resumeAudio, 1500);
+
+    // ---- PPSSPP ini patching (web defaults from the reference runtime) ----
+    function patchIniValue(text, section, key, value) {
+      const lines = text ? text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n') : [];
+      const sectionHeader = '[' + section + ']';
+      const sectionRe = /^\s*\[([^\]]+)\]\s*$/;
+      const keyRe = new RegExp('^\\s*' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*=');
+      let sectionStart = -1, sectionEnd = lines.length;
+      for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(sectionRe);
+        if (!m) continue;
+        if (m[1] === section) {
+          sectionStart = i;
+          for (let j = i + 1; j < lines.length; j++) {
+            if (sectionRe.test(lines[j])) { sectionEnd = j; break; }
+          }
+          break;
+        }
+      }
+      if (sectionStart === -1) {
+        if (lines.length && lines[lines.length - 1] !== '') lines.push('');
+        lines.push(sectionHeader, key + ' = ' + value);
+      } else {
+        for (let i = sectionStart + 1; i < sectionEnd; i++) {
+          if (keyRe.test(lines[i])) {
+            lines[i] = key + ' = ' + value;
+            return lines.join('\n').replace(/\n*$/, '\n');
+          }
+        }
+        lines.splice(sectionEnd, 0, key + ' = ' + value);
+      }
+      return lines.join('\n').replace(/\n*$/, '\n');
+    }
+
+    // 拉起的 web 原生时序/稳定性默认值（来自 ppsspp-wasm 参考运行时）。
+    // web 时序组让帧率交给 rAF 驱动；稳定性组关闭死等坏内存访问。
+    const WEB_CONFIG = [
+      ['General', 'ForceLagSync2', 'True'],
+      ['Graphics', 'DisplayRefreshRate', '60'],
+      ['Graphics', 'FrameRate', '0'],
+      ['Graphics', 'FrameRate2', '-1'],
+      ['Graphics', 'FrameSkip', '0'],
+      ['Graphics', 'AutoFrameSkip', 'False'],
+      ['Graphics', 'VerticalSync', 'True'],
+      ['Graphics', 'LowLatencyPresent', 'False'],
+      ['Sound', 'Enable', 'True'],
+      ['Sound', 'ExtraAudioBuffering', 'False'],
+      ['Sound', 'AudioBufferSize', '1024'],
+      ['Sound', 'FillAudioGaps', 'True'],
+      ['Sound', 'AudioSyncMode', '0'],
+      ['General', 'IgnoreBadMemAccess', 'True'],
+      ['CPU', 'FastMemoryAccess', 'True'],
+      // 存档云同步：退出 PPSSPP 菜单时别弹"正在退出"确认框直接写盘
+      ['General', 'EnableAutoSave', 'True'],
+      // 中文界面（.data 资产缺语言包时 PPSSPP 自动回退英文）
+      ['System', 'Language', 'zh_CN'],
+    ];
+
+    // ---- persist: walk the PPSSPP root, upload files changed since boot ----
+    // 快照 = size:mtime；自举后只有 PPSSPP 真正写过的文件才会上传，未改动的
+    // 会话退出时不碰服务器（杜绝多会话竞态互相覆盖，与 RA 壳同思路）
+    const bootStats = new Map(); // fsPath → 'size:mtime'
+    let FS = null;
+    const fsStatDir = (root) => {
+      const stats = new Map();
+      const walk = (dir) => {
+        let entries;
+        try { entries = FS.readdir(dir); } catch (e) { return; }
+        for (const name of entries) {
+          if (name === '.' || name === '..') continue;
+          const full = dir + '/' + name;
+          let st;
+          try { st = FS.stat(full); } catch (e) { continue; }
+          if (FS.isDir(st.mode)) walk(full);
+          else if (FS.isFile(st.mode)) stats.set(full, (st.size || 0) + ':' + (st.mtime ? st.mtime.getTime() : 0));
+        }
+      };
+      walk(root);
+      return stats;
+    };
+
+    let persistBusy = false;
+    async function persistFiles() {
+      if (!FS || serverRestoreFailed || persistBusy) return;
+      persistBusy = true;
+      try {
+        const current = fsStatDir(PPSSPP_ROOT);
+        for (const [p, sig] of current) {
+          if (bootStats.get(p) === sig) continue; // 自举以来未变
+          try {
+            const data = FS.readFile(p);
+            await serverPut('cfg', SERVER_PREFIX + p.slice(PPSSPP_ROOT.length + 1), data);
+            bootStats.set(p, sig); // 上传成功才推进快照
+          } catch { /* 单文件失败不影响其余 */ }
+        }
+      } finally {
+        persistBusy = false;
+      }
+    }
+
+    // parent destroy() flush protocol（与 RA 壳共用同一消息协议）
+    window.addEventListener('message', (e) => {
+      if (e.source !== parent) return;
+      const d = e.data || {};
+      if (d.type === 'ra-persist-now') {
+        persistFiles().then(() => parent.postMessage({ type: 'ra-persisted' }, '*'));
+      }
+    });
+    window.addEventListener('pagehide', () => { persistFiles(); });
+
+    // ---- Module: defined BEFORE the PPSSPPSDL.js classic script loads ----
+    let gameStarted = false;
+    let bootFailed = false;
+    window.Module = {
+      canvas: document.getElementById('canvas'),
+      webglContextAttributes: {
+        powerPreference: 'high-performance',
+        alpha: false, antialias: false, depth: true, stencil: true,
+        preserveDrawingBuffer: false, desynchronized: true,
+        failIfMajorPerformanceCaveat: false,
+      },
+      SDL2: { audioContext: preAudioCtx },
+      arguments: gameUrl ? ['/games/' + (decodeURIComponent(gameUrl.split('/').pop()).replace(/[^\p{L}\p{N}.\- ]+/gu, '_'))] : [],
+      locateFile(path) { return '/ppsspp/build-wasm/' + path; },
+      print(text) { pushLog('stdout: ' + text); },
+      printErr(text) { pushLog('stderr: ' + text); },
+      setStatus(text) { if (text && !gameStarted) loadingText.textContent = String(text).slice(0, 80); },
+      monitorRunDependencies(left) {
+        if (left > 0 && !gameStarted) loadingText.textContent = '初始化运行时… (' + left + ')';
+      },
+      preRun: [function () {
+        // 非模块化构建把 FS 挂在 window 上（Module.FS 未必导出）
+        FS = window.FS || window.Module.FS;
+        if (!FS) { pushLog('FATAL: FS not available on window or Module'); }
+        // main() 等 ROM 流式写完再启动（Emscripten 不等待 preRun 的
+        // promise，必须用 runDependency 挡住）
+        window.Module.addRunDependency('wemu-rom');
+        (async () => {
+          try {
+            // 1) server-pulled config + saves into the FS
+            for (const [p, data] of Object.entries(serverFiles)) {
+              try {
+                FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
+                FS.writeFile(p, data);
+              } catch (e) { pushLog('restore-FAIL ' + p + ': ' + e.message); }
+            }
+            pushLog('serverFiles written: ' + Object.keys(serverFiles).length);
+            // 2) web defaults into the ini (AFTER restore: 强制项覆盖恢复值)
+            const enc = new TextEncoder();
+            const dec = new TextDecoder();
+            for (const root of ['/home/web_user/.config/ppsspp', '/root/.config/ppsspp']) {
+              const dir = root + '/PSP/SYSTEM';
+              try { FS.mkdirTree(dir); } catch (e) { /* exists */ }
+              const iniPath = dir + '/ppsspp.ini';
+              let text = '';
+              try { text = dec.decode(FS.readFile(iniPath)); } catch (e) { /* first run */ }
+              text = patchIniValue(text, 'General', 'CurrentDirectory', '/games');
+              for (const [section, key, value] of WEB_CONFIG) {
+                text = patchIniValue(text, section, key, value);
+              }
+              FS.writeFile(iniPath, enc.encode(text));
+            }
+            // 3) stream the game into /games/<safe> (chunked, low peak memory)
+            if (gameUrl) {
+              FS.mkdirTree('/games');
+              loadingText.textContent = '正在下载游戏…';
+              const romResp = await fetch(gameUrl);
+              if (!romResp.ok) throw new Error('ROM 下载失败: HTTP ' + romResp.status);
+              const total = Number(romResp.headers.get('content-length') || 0);
+              const romPath = '/games/' + window.Module.arguments[0].split('/').pop();
+              const romFile = FS.open(romPath, 'w+');
+              if (total) { try { FS.truncate(romPath, total); } catch { /* 预分配失败不影响 */ } }
+              const reader = romResp.body.getReader();
+              let pos = 0, lastDraw = 0;
+              try {
+                for (;;) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  FS.write(romFile, value, 0, value.length, pos);
+                  pos += value.length;
+                  const now = Date.now();
+                  if (now - lastDraw > 200) {
+                    lastDraw = now;
+                    loadingText.textContent = total
+                      ? `正在下载游戏… ${(pos / 1048576).toFixed(0)}/${(total / 1048576).toFixed(0)}MB (${Math.floor(pos / total * 100)}%)`
+                      : `正在下载游戏… ${(pos / 1048576).toFixed(0)}MB`;
+                  }
+                }
+              } catch (e) {
+                try { reader.cancel(); } catch { /* ignore */ }
+                try { FS.unlink(romPath); } catch { /* ignore */ }
+                throw new Error('ROM 下载失败: ' + (e && e.message || e));
+              }
+              FS.close(romFile);
+              if (total && pos !== total) {
+                try { FS.unlink(romPath); } catch { /* ignore */ }
+                throw new Error('ROM 下载不完整: ' + pos + '/' + total + ' 字节');
+              }
+              pushLog('game mounted: ' + romPath + ' (' + pos + ' bytes)');
+            }
+            // 4) boot snapshot: 之后只有 PPSSPP 写过的文件才会被上传
+            for (const [p, sig] of fsStatDir(PPSSPP_ROOT)) bootStats.set(p, sig);
+            loadingText.textContent = '启动 PSP…';
+          } catch (err) {
+            bootFailed = true;
+            const detail = err?.message || (err?.errno ? 'FS errno ' + err.errno : '') || (err && String(err)) || 'unknown';
+            pushLog('preRun FAILED: ' + (err?.stack || detail));
+            loadingText.textContent = '启动失败：' + detail;
+            loadingText.style.color = '#f87171';
+            report('ejs-error', String(err?.message || err));
+            throw err;
+          } finally {
+            window.Module.removeRunDependency('wemu-rom');
+          }
+        })();
+      }],
+      onRuntimeInitialized() {
+        pushLog('runtime initialized, PPSSPP starting');
+        if (bootFailed) return; // preRun 已把失败写到加载层，别覆盖
+        gameStarted = true;
+        loadingText.textContent = 'PSP 启动中…';
+        // 定期把 PPSSPP 写出的存档推到服务器（30s，与 RA 壳一致）
+        setInterval(() => { persistFiles(); }, 30000);
+        setTimeout(() => { persistFiles(); }, 8000); // PPSSPP 建目录后先来一轮
+        // 游戏镜像装载需要几秒（黑屏阶段），再撤掉加载层
+        setTimeout(() => {
+          document.getElementById('loading').classList.add('hide');
+          report('ejs-start');
+          report('ra-ready');
+          try { window.focus(); } catch { /* ignore */ }
+        }, 3000);
+        // 键盘焦点自愈：iframe 不会自动持有焦点
+        setTimeout(() => { try { window.focus(); } catch { /* ignore */ } }, 300);
+      },
+      onAbort(reason) {
+        pushLog('ABORT: ' + reason);
+        report('ejs-error', 'PPSSPP aborted: ' + reason);
+        report('ejs-esc');
+      },
+      // PPSSPP 菜单里"退出"时进程正常结束（EXIT_RUNTIME 构建才会回调，
+      // 保险丝：无论哪种退出路径都让前端收壳）
+      onExit(status) {
+        pushLog('exit: ' + status);
+        report('ejs-esc');
+      },
+    };
+
+    // ---- go: append the classic script; it merges with window.Module and
+    // runs main() itself (fetches .wasm + .data assets via locateFile) ----
+    const script = document.createElement('script');
+    script.src = '/ppsspp/build-wasm/PPSSPPSDL.js?t=' + Date.now();
+    script.onerror = () => {
+      loadingText.textContent = '启动失败：PPSSPPSDL.js 加载失败';
+      loadingText.style.color = '#f87171';
+      report('ejs-error', 'PPSSPPSDL.js failed to load');
+    };
+    document.body.appendChild(script);
+
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') {
+        // PPSSPP SDL 自己处理 Esc（呼出暂停菜单）；只在运行时异常终止
+        // 时由 onAbort 上报 ejs-esc，这里不抢
+      }
+    });
+    window.addEventListener('error', (ev) => report('ejs-error', String(ev.message || 'error')));
+  </script>
+</body>
+</html>

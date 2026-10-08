@@ -158,12 +158,25 @@ html, body {
 .mainmenu-list {
   margin-top: 5vh; width: min(680px, 86vw);
   display: flex; flex-direction: column; gap: 6px;
+  max-height: 62vh; overflow-y: auto; overflow-x: hidden;
+  /* 实底面板:无论主题/透明度如何,文字始终保持高对比可读 */
+  background: #0b0f19; border: 1px solid #1f2937; border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  /* 隐藏原生滚动条:键盘/手柄/点击导航都会自动把选中项滚入视野 */
+  scrollbar-width: none; -ms-overflow-style: none;
 }
+.mainmenu-list::-webkit-scrollbar { display: none; }
 .mainmenu-item {
   padding: 14px 22px; font-size: clamp(16px, 2.4vh, 22px);
-  color: #9ca3af; border-radius: 6px; cursor: pointer;
+  color: #e5e7eb; border-radius: 6px; cursor: pointer;
   transition: background 0.12s, color 0.12s, transform 0.12s;
   text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* 关键:禁止 flex 压缩行高——📁 emoji 的字体行盒比文字高很多,
+     容器空间不足时 flex 会把每行压扁,文字下沉被下一行盖住 */
+  flex-shrink: 0;
+  line-height: 1.25;
 }
 .mainmenu-item.selected {
   background: #0e7490; color: #fff; transform: scale(1.03);

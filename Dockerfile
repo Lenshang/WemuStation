@@ -26,6 +26,7 @@ COPY wemu/server server
 COPY wemu/public public
 COPY wemu/themes themes
 COPY wemu/retroarch retroarch
+COPY wemu/ppsspp ppsspp
 COPY wemu/emulator emulator
 COPY --from=builder /app/dist dist
 

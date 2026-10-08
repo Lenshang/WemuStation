@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set ROM_DIR=O:\Pegasus G\Roms
+set ROM_DIR=J:\开源掌机\02.游戏roms分类下载
 cd /d "%~dp0"
 
 if not exist "node_modules\" (

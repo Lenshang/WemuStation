@@ -1,10 +1,11 @@
-// Game player: full-screen iframe hosting either the EmulatorJS shell or the
-// RetroArch wasm build. The iframe isolates the wasm core so exiting tears
-// everything down cleanly. Both shells speak the same postMessage protocol
-// (ejs-start / ejs-esc / ejs-error) plus ra-command for RetroArch controls.
+// Game player: full-screen iframe hosting either the EmulatorJS shell, the
+// RetroArch wasm build, or the standalone PPSSPP wasm build (PSP). The iframe
+// isolates the wasm core so exiting tears everything down cleanly. All shells
+// speak the same postMessage protocol (ejs-start / ejs-esc / ejs-error) plus
+// ra-command for RetroArch controls.
 import type { GameEntry, SystemInfo } from '../types';
 
-export type PlayerEngine = 'emulatorjs' | 'retroarch';
+export type PlayerEngine = 'emulatorjs' | 'retroarch' | 'ppsspp';
 
 export interface PlayerHandle {
   destroy: () => void;
@@ -28,6 +29,11 @@ export function launchGame(
   if (game) {
     qs.set('game', game.url);
     qs.set('name', game.name);
+    // per-system RA config override (player.html adds --appendconfig
+    // userdata/per-system/<sys>.cfg): settings saved inside this session's
+    // RA menu land in this system's own config, like ArkOS/AmberELEC do
+    const sysId = (game as unknown as { sysId?: string }).sysId || sys.id;
+    qs.set('sys', sysId);
   } else {
     qs.set('mode', 'menu');
     qs.set('name', 'RetroArch Settings');
@@ -39,8 +45,10 @@ export function launchGame(
   if (pads.length) qs.set('padIndex', String(pads[0].index));
   else qs.set('padIndex', '0');
   const iframe = document.createElement('iframe');
-  const shell = engine === 'retroarch' ? '/retroarch-player.html' : '/player.html';
-  if (engine === 'retroarch') qs.set('t', String(Date.now())); // bypass stale iframe caches
+  const shell = engine === 'retroarch' ? '/retroarch-player.html'
+    : engine === 'ppsspp' ? '/ppsspp-player.html'
+    : '/player.html';
+  if (engine !== 'emulatorjs') qs.set('t', String(Date.now())); // bypass stale iframe caches
   iframe.src = shell + '?' + qs.toString();
   iframe.allow = 'autoplay; fullscreen; gamepad';
 
@@ -79,6 +87,10 @@ export function launchGame(
       (window as unknown as { __ralogs?: string[] }).__ralogs =
         (window as unknown as { __ralogs?: string[] }).__ralogs || [];
       (window as unknown as { __ralogs: string[] }).__ralogs.push(String(d.line));
+    } else if (d.type === 'ra-sync-warning') {
+      console.warn('[player]', d.message);
+      // 同步状态直接反映在顶栏标题上（toast 太快会错过）
+      if (typeof d.message === 'string') title.textContent = `⚠ ${d.message}`;
     } else if (d.type === 'ejs-error') {
       console.error('[player]', d.message);
     }
@@ -99,7 +111,9 @@ export function launchGame(
         };
         window.addEventListener('message', onPersisted);
         iframeWin?.postMessage({ type: 'ra-persist-now' }, '*');
-        setTimeout(resolve, 2500); // never hang the exit on a stuck sync
+        // 上限 6s:存档按新旧排序后最先上传,正常几十毫秒完成;
+        // 6s 只在服务器不可达(fetch 超时)时才兜底
+        setTimeout(resolve, 6000);
       });
       void flushed.then(() => {
         window.removeEventListener('message', onMessage);

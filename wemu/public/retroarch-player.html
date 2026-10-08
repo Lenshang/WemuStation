@@ -147,10 +147,23 @@
     })();
 
     const HOME = '/home/web_user/retroarch';
-    const CFG_PATH = HOME + '/userdata/retroarch.cfg';
+    // 诊断日志必须在最前：恢复流程（远早于 factory）也要打日志
+    const logs = [];
+    const pushLog = (t) => { logs.push(t); if (logs.length > 200) logs.shift(); window.__ralocal = logs; try { parent.postMessage({ type: 'ra-log', line: t }, '*'); } catch {} };
     const SAVES = HOME + '/saves';
     const STATES = HOME + '/states';
     const ROM_DIR = HOME + '/downloads';
+    // 主配置文件：游戏会话按系统隔离（ArkOS/AmberELEC 同款做法）——每个系统
+    // 一份独立的 retroarch.cfg，RA 菜单"退出 RetroArch"时的 config_save_on_exit
+    // 会把当前全部设置写回该文件，实现"按系统保存设置"。"RetroArch 设置"
+    // 入口（主菜单模式）仍使用全局配置。不能用 --appendconfig 实现这个：
+    // RA 的菜单保存/退出保存永远写回 -c 主配置，从不写回 append 文件。
+    const GLOBAL_CFG_PATH = HOME + '/userdata/retroarch.cfg';
+    const sysIdRaw = q.get('sys') || '';
+    const SYS_CFG_PATH = sysIdRaw && !menuMode
+      ? HOME + '/per-system/' + sysIdRaw.replace(/[^\w.\-]+/g, '_') + '.cfg'
+      : null;
+    const CFG_PATH = SYS_CFG_PATH || GLOBAL_CFG_PATH;
     // ---- server-side storage sync (SQLite on the host, shared by all clients) ----
     const NS = { saves: 'save', states: 'state', userdata: 'cfg' };
     const CFG_STORE = 'wemu-ra-cfg';
@@ -181,32 +194,65 @@
 
     try {
       // fetch ROM (skipped in settings/menu mode)
-      let romData = null;
+      // 流式下载：ROM 不再整包 arrayBuffer 进内存(旧路径峰值≈3×ROM体积,
+      // 小内存设备拉大 ROM 直接失败),改为运行时就绪后分块写入虚拟磁盘
       let romName = '';
       if (!menuMode) {
-        loadingText.textContent = '正在下载游戏…';
-        const romResp = await fetch(gameUrl);
-        if (!romResp.ok) throw new Error('ROM 下载失败: HTTP ' + romResp.status);
-        romData = new Uint8Array(await romResp.arrayBuffer());
-        romName = decodeURIComponent(gameUrl.split('/').pop()).replace(/[^\w.\- ]+/g, '_');
+        // 保留 Unicode 字母/数字(中文游戏名),否则所有中文游戏名都会被
+        // 清洗成同一个 "_-_" 之类的名字,导致核心选项文件互相覆盖
+        romName = decodeURIComponent(gameUrl.split('/').pop())
+          .replace(/[^\p{L}\p{N}.\- ]+/gu, '_');
       }
 
       // pull saves/states/config from the SERVER (shared across all clients)
+      // 失败安全：任何恢复失败都会置 serverRestoreFailed，persistFiles 届时
+      // 拒绝上传——否则本会话会用预设内容启动并在 30s 周期里把服务器上用户
+      // 真实的存档/配置全部覆盖掉（已发生过的真实数据丢失事故）。
       loadingText.textContent = '正在从服务器恢复存档…';
       const serverFiles = {};
-      for (const dir of Object.keys(NS)) {
-        try {
+      let serverRestoreFailed = false;
+      const restoreServerFiles = async () => {
+        const files = {};
+        for (const dir of Object.keys(NS)) {
           const listing = await serverList(NS[dir]);
           for (const item of listing) {
+            // legacy junk from old double-prefix bugs — never restore
+            if (item.path.startsWith('/userdata/userdata/')) continue;
             const data = await serverGet(NS[dir], item.path);
             // canonical mapping: cfg ns keeps its server path verbatim
-            // (/retroarch.cfg, /userdata/retroarch.cfg, ...) because the cfg
-            // paths already include their subdir; save/state get the dir prefix
-            serverFiles[dir === 'cfg'
-              ? HOME + item.path.replace(/^\/userdata/, '/userdata')
-              : HOME + '/' + dir + item.path] = data;
+            // (/userdata/retroarch.cfg, /userdata/config/<core>/<game>.opt…)
+            // because those paths already include their subdir; save/state
+            // get the dir prefix. NOTE: dir is the NS KEY ("saves"/"states"/
+            // "userdata"), so compare NS[dir] — the original dir==='cfg'
+            // test could never be true and pushed every cfg file one level
+            // too deep (userdata/userdata/...), where RA never reads it.
+            // per-system 主配置已移出 userdata 同步范围(HOME/per-system/),
+            // 否则会被运行中会话的周期同步用启动时的旧值覆盖前端的新选择。
+            // 旧版双重前缀键(/userdata/per-system/*)是旧标签页的持续写入
+            // 源,绝不恢复——否则旧遮罩值会覆盖 /per-system/ 里的新值。
+            var fsPath;
+            if (NS[dir] === 'cfg' && item.path.startsWith('/per-system/'))
+              fsPath = HOME + item.path;
+            else if (NS[dir] === 'cfg' && item.path.startsWith('/userdata/per-system/'))
+              continue; // 旧版双重前缀键:旧标签页会持续写入旧遮罩值,绝不恢复
+            else if (NS[dir] === 'cfg')
+              fsPath = HOME + (item.path.startsWith('/userdata')
+                  ? item.path
+                  : '/userdata' + item.path);
+            else
+              fsPath = HOME + '/' + dir + item.path;
+            files[fsPath] = data;
           }
-        } catch (e) { console.warn('server list failed', dir, e); }
+        }
+        return files;
+      };
+      try {
+        Object.assign(serverFiles, await restoreServerFiles());
+      } catch (e) {
+        serverRestoreFailed = true;
+        pushLog('[wemu] restore-THROW: ' + (e && (e.message || String(e)) || 'unknown'));
+        console.error('server restore failed — uploads disabled this session', e);
+        report('ra-sync-warning', '存档/配置同步失败：本次会话为只读模式，改动不会被保存');
       }
 
       // BIOS files: arcade cores need e.g. neogeo.zip / pgm.zip inside the
@@ -256,15 +302,33 @@
 
       const biosFiles = {};
       if (!menuMode) {
+        // 按系统拉 BIOS:只拉当前系统可能用到的(此前是写死的全量清单,
+        // 启动 FC 也会去拉 neogeo/pgm 街机 BIOS、PSX/DS/MSX/Atari BIOS 等
+        // 三四十个文件,白耗带宽拖慢启动)。
         // entries support "srcName>destName" when the core expects a
         // different file name than the bios folder provides
-        const biosCandidates = ['neogeo.zip', 'pgm.zip', 'pgm2.zip', 'neocdz.zip',
-          'scph1000.bin', 'scph1001.bin', 'scph101.bin', 'scph5501.bin',
-          'scph7001.bin', 'scph7502.bin', 'scph9002.bin',
-          'gb_bios.bin', 'gbc_bios.bin', 'gba_bios.bin',
-          '5200.rom', '5200a.rom', 'ATARIXL.ROM', 'ATARIOSA.ROM',
-          'ATARIOSB.ROM', 'ATARIBAS.ROM',
-          '7800 BIOS (U).rom>7800.bin', '7800 BIOS (E).rom>7800.bin', '7800.bin'];
+        const SYSTEM_BIOS = {
+          nds: ['bios7.bin', 'bios9.bin', 'firmware.bin'],
+          pcenginecd: ['syscard3.pce'],
+          psx: ['scph1000.bin', 'scph1001.bin', 'scph101.bin', 'scph5501.bin',
+                'scph7001.bin', 'scph7502.bin', 'scph9002.bin'],
+          neogeo: ['neogeo.zip'],
+          neogeocd: ['neocdz.zip', 'neocd/neocd.bin', 'neocd/000-lo.lo'],
+          mame: ['neogeo.zip', 'pgm.zip', 'pgm2.zip'],
+          fbneo: ['neogeo.zip', 'pgm.zip', 'pgm2.zip'],
+          segacd: ['bios_CD_E.bin', 'bios_CD_U.bin', 'bios_CD_J.bin'],
+          sega32x: ['32X_G_BIOS.BIN', '32X_M_BIOS.BIN', '32X_S_BIOS.BIN',
+                    '32X_G_BIOS.BIN>32x_g.bin', '32X_M_BIOS.BIN>32x_m.bin', '32X_S_BIOS.BIN>32x_s.bin'],
+          msx2: ['msx-bluemsx.zip'],
+          pc98: ['np2kai/BIOS.ROM', 'np2kai/FONT.ROM', 'np2kai/ITF.ROM', 'np2kai/SOUND.ROM'],
+          lynx: ['lynxboot.img'],
+          gb: ['gb_bios.bin', 'gbc_bios.bin'],
+          gbc: ['gb_bios.bin', 'gbc_bios.bin'],
+          gba: ['gba_bios.bin'],
+          atari5200: ['5200.rom', '5200a.rom'],
+          atari7800: ['7800 BIOS (U).rom>7800.bin', '7800 BIOS (E).rom>7800.bin', '7800.bin']
+        };
+        const biosCandidates = SYSTEM_BIOS[sysIdRaw] || [];
         loadingText.textContent = '正在加载 BIOS…';
         await Promise.all(biosCandidates.map(async (entry) => {
           const sep = entry.indexOf('>');
@@ -275,8 +339,10 @@
             if (r.ok) biosFiles[dest] = new Uint8Array(await r.arrayBuffer());
           } catch { /* optional */ }
         }));
-        // 压缩包形态的 BIOS（pgm.zip 等）解出散文件——FBA2012 等驱动的
-        // BIOS 搜索需要散文件
+        // 压缩包形态的 BIOS（neogeo.zip/pgm.zip 等）额外解出散文件供按散
+        // 文件搜 BIOS 的驱动使用；zip 本体必须保留——FBNeo/MAME 系核心只认
+        // 压缩包（neogeo.zip 要以包的形式出现在 system/ 或内容目录），解包
+        // 后删 zip 会让 FBNeo 集组检查报"缺 ROM"
         for (const [dest, data] of Object.entries(biosFiles)) {
           if (!/\.zip$/i.test(dest)) continue;
           try {
@@ -284,9 +350,11 @@
             for (const [name, bytes] of entries) {
               const safe = name.split('/').pop().replace(/[^\w.\- ]+/g, '_');
               biosFiles[dest.replace(/\.zip$/i, '') + '_' + safe] = bytes;
+              // 保留 zip 内目录结构：blueMSX 的 Databases/Machines 等
+              // 必须以真实路径落到 system/ 下
+              if (name.includes('/')) biosFiles[name] = bytes;
             }
-            delete biosFiles[dest];
-          } catch { /* 保留 zip 本体 */ }
+          } catch { /* zip 解不开则仅保留本体 */ }
         }
       }
 
@@ -320,22 +388,27 @@
         ? ['-v', '--menu', '-c', CFG_PATH]
         : ['-v', ROM_DIR + '/' + romName, '-c', CFG_PATH];
       if (menuMode) loadingText.textContent = '正在打开 RetroArch 设置…';
-      // forward RetroArch console output to the parent for diagnostics
-      const logs = [];
-      const pushLog = (t) => { logs.push(t); if (logs.length > 200) logs.shift(); window.__ralocal = logs; try { parent.postMessage({ type: 'ra-log', line: t }, '*'); } catch {} };
-
-      // push saves/states/config to the SERVER (shared across clients);
-      // config changes propagate to every device on the next game launch
-      const persistFiles = async () => {
+      // 诊断日志 pushLog 已在模块顶部定义（服务器恢复阶段就要用）
+      // includePerSystem: per-system 主配置只在"退出/关闭"时机推送。
+      // 若放进 30s 周期同步,运行中的会话会用启动时的旧值反复覆盖前端
+      // 刚选的遮罩/滤镜(服务器上的新选择活不过 30 秒)
+      const persistFiles = async (includePerSystem) => {
         if (!Module || !Module.FS) return;
+        // 只读模式（启动时恢复失败）：绝不上传，防止用预设/残缺内容
+        // 覆盖服务器上用户真实的存档与配置
+        if (serverRestoreFailed) return;
         // [virtual dir, server namespace, server-path prefix]
         const dirs = [
           [SAVES, NS.saves, ''],
           [STATES, NS.states, ''],
           [HOME + '/userdata', NS.userdata, '']
         ];
+        // 先收集待上传文件,存档类按修改时间倒序——刚保存的存档第一个上传,
+        // 即使上传中途被销毁中断,丢的也只是最旧的文件(此前红宝石的
+        // .srm 排在队列第 8 位,退出冲刷被 2.5s 上限掐断时它永远轮不到)
+        const jobs = [];
         for (const [dir, ns, prefix] of dirs) {
-          const walk = async (d) => {
+          const walk = (d) => {
             let entries = [];
             try { entries = Module.FS.readdir(d); } catch { return; }
             for (const f of entries) {
@@ -344,37 +417,67 @@
               let st;
               try { st = Module.FS.stat(p); } catch { continue; }
               if (Module.FS.isDir(st.mode)) {
-                await walk(p);
+                walk(p);
               } else if (Module.FS.isFile(st.mode)) {
-                try {
-                  const data = Module.FS.readFile(p);
-                  // collapse any historical /userdata/userdata/... nesting
-                  let rel = p.slice(dir.length);
-                  while (rel.indexOf('/' + NS.userdata + '/') === 0 && ns === NS.userdata) {
-                    rel = rel.slice(('/' + NS.userdata).length);
-                  }
-                  // cfg: skip push while content is unchanged since boot — a
-                  // freshly-written preset cfg must never clobber the newer
-                  // server copy that other devices may have saved
-                  if (ns === NS.userdata && p === CFG_PATH && window.__bootCfgKey) {
-                    let h = 0;
-                    for (let bi = 0; bi < data.length; bi++) { h = (h * 31 + data[bi]) | 0; }
-                    if (window.__bootCfgKey === cfgSigKey(p, h)) continue;
-                  }
-                  const serverPath = prefix + rel;
-                  await serverPut(ns, serverPath, data);
-                } catch { /* ignore */ }
+                jobs.push({ p, dir, ns, prefix, mtime: st.mtime ? st.mtime.getTime() : 0 });
               }
             }
           };
-          await walk(dir);
+          walk(dir);
+        }
+        jobs.sort((a, b) => {
+          const sa = a.ns === NS.saves, sb = b.ns === NS.saves;
+          if (sa !== sb) return sa ? -1 : 1;                       // 存档优先于状态/配置
+          if (sa && sb && a.mtime !== b.mtime) return b.mtime - a.mtime; // 新改动的存档先传
+          return 0;
+        });
+        for (const job of jobs) {
+          try {
+            const data = Module.FS.readFile(job.p);
+            const dirLen = job.dir.length;
+            // collapse any historical /userdata/userdata/... nesting
+            let rel = job.p.slice(dirLen);
+            while (rel.indexOf('/' + NS.userdata + '/') === 0 && job.ns === NS.userdata) {
+              rel = rel.slice(('/' + NS.userdata).length);
+            }
+            // 双重前缀垃圾（历史 bug 遗留）绝不上传，否则清理后会被
+            // 写回存储、下个会话恢复进 FS，循环自增强
+            if (job.ns === NS.userdata && rel.startsWith('/userdata/')) continue;
+            const serverPath = job.ns === NS.userdata
+              ? '/userdata' + rel
+              : job.prefix + rel;
+            if (job.ns === NS.userdata) {
+              // 签名门闩：整个 cfg 命名空间只在"内容相对启动快照真正
+              // 变化"时才上传。否则每个被关闭的会话（包括从未改过任
+              // 何设置的）都会在退出持久化时用陈旧内容覆盖服务器——
+              // 多会话竞态曾把用户的保存反复冲掉
+              let h = 0;
+              for (let bi = 0; bi < data.length; bi++) { h = (h * 31 + data[bi]) | 0; }
+              const sig = cfgSigKey(serverPath, h);
+              const boot = window.__bootSigs && window.__bootSigs[serverPath];
+              if (boot !== undefined) {
+                if (boot === sig) continue; // 启动以来未变
+              } else if (data.length === 0) {
+                continue; // 启动时不存在的新空文件
+              }
+            }
+            await serverPut(job.ns, serverPath, data);
+          } catch { /* ignore */ }
+        }
+        // per-system 主配置在 userdata 同步范围之外,仅在退出/关闭时机推送
+        // (RA 退出时的 config_save_on_exit 会把当前设置写回这份文件)
+        if (includePerSystem && SYS_CFG_PATH) {
+          try {
+            var pdata = Module.FS.readFile(SYS_CFG_PATH);
+            await serverPut(NS.userdata, '/per-system/' + SYS_CFG_PATH.split('/').pop(), pdata);
+          } catch { /* ignore */ }
         }
       };
       window.addEventListener('pagehide', () => {
         try { Module?.callMain && Module._cmd_savefiles?.(); } catch {}
         // fire-and-forget is unreliable while the page is being torn down;
         // also notify the shell via postMessage (handled in 'ra-exiting')
-        persistFiles().then(() => parent.postMessage({ type: 'ra-persisted' }, '*'));
+        persistFiles(true).then(() => parent.postMessage({ type: 'ra-persisted' }, '*'));
       });
       // explicit sync hook the parent can await before destroying the iframe
       window.addEventListener('message', (e) => {
@@ -382,10 +485,31 @@
         const d = e.data || {};
         if (d.type === 'ra-persist-now') {
           try { Module?._cmd_savefiles?.(); } catch {}
-          persistFiles().then(() => parent.postMessage({ type: 'ra-persisted' }, '*'));
+          persistFiles(true).then(() => parent.postMessage({ type: 'ra-persisted' }, '*'));
         }
       });
-      setInterval(() => { if (Module?.FS) persistFiles(); }, 30000);
+      setInterval(async () => {
+        if (!Module?.FS) return;
+        if (serverRestoreFailed) {
+          // 周期性热重试：恢复成功后 FS 内容与服务器一致，上传随之恢复
+          try {
+            const files = await restoreServerFiles();
+            for (const [p, data] of Object.entries(files)) {
+              Module.FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
+              Module.FS.writeFile(p, data);
+            }
+            serverRestoreFailed = false;
+            report('ra-sync-warning', '同步已恢复：后续改动会正常保存');
+          } catch { /* 下个周期再试 */ }
+          return;
+        }
+        // SRAM 周期落盘：本构建没有 RA 侧的 SaveRAM 自动保存
+        // (save_file_autosave_interval 不存在)，游戏内存档在退出前只存在于
+        // 核心内存。这里等效补上原版默认行为：每 30s 把游戏内存档刷到虚拟
+        // 磁盘，异常退出(F5/关页)最多丢 30 秒进度。内容未变时 RA 会跳过写入。
+        try { Module._cmd_savefiles?.(); } catch { /* ignore */ }
+        persistFiles(false);
+      }, 30000);
 
       Module = await factory({
         canvas: document.getElementById('canvas'),
@@ -401,8 +525,8 @@
           const FS = m.FS;
           for (const d of [HOME, HOME + '/userdata', SAVES, STATES, ROM_DIR, HOME + '/screenshots', HOME + '/system'])
             FS.mkdirTree(d);
+          try { FS.mkdirTree(CFG_PATH.slice(0, CFG_PATH.lastIndexOf('/'))); } catch { /* exists */ }
           FS.writeFile(CFG_PATH, RA_CFG);
-          if (romData) FS.writeFile(ROM_DIR + '/' + romName, romData);
           // server-pulled files override the preset config: the shared
           // retroarch.cfg follows the user across every client device.
           // First-ever run (nothing on the server) uses the preset defaults.
@@ -410,15 +534,52 @@
             try {
               FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
               FS.writeFile(p, data);
-            } catch { /* ignore */ }
+              pushLog('[wemu] restored ' + p + ' (' + (data ? data.length : 'null') + 'B)');
+            } catch (e) { pushLog('[wemu] restore-FAIL ' + p + ': ' + e.message); }
           }
+          pushLog('[wemu] serverFiles count=' + Object.keys(serverFiles).length
+            + ' failed=' + serverRestoreFailed);
+          // 启动签名快照：cfg 命名空间每个文件在"恢复完成"时的内容签名。
+          // persistFiles 只上传与快照不同的文件（= RA 真正写过），
+          // 从未改动的会话退出时不上传任何配置，杜绝多会话竞态覆盖
+          window.__bootSigs = {};
+          for (const [p, data] of Object.entries(serverFiles)) {
+            if (!p.startsWith(HOME + '/userdata') || !data) continue;
+            let h = 0;
+            for (let bi = 0; bi < data.length; bi++) { h = (h * 31 + data[bi]) | 0; }
+            const serverPath = p.startsWith(HOME + '/userdata/userdata')
+              ? null
+              : p.slice((HOME + '/userdata').length);
+            if (serverPath) window.__bootSigs['/userdata' + serverPath] = cfgSigKey('/userdata' + serverPath, h);
+          }
+          // 每系统独立主配置：首次为该系统播种**全局配置的完整副本**
+          // （ArkOS 同款）。副本含全部键，用户改设置后"退出 RetroArch"时
+          // config_save_on_exit 把当前配置写回这份副本，按系统生效。
+          // 之后每次启动，服务器恢复的 per-system 文件已覆盖此预设。
+          if (SYS_CFG_PATH) {
+            try {
+              if (!FS.analyzePath(SYS_CFG_PATH).exists) {
+                var seed = null;
+                try { seed = FS.readFile(GLOBAL_CFG_PATH); } catch { /* 全局还没有 */ }
+                FS.writeFile(SYS_CFG_PATH, seed || RA_CFG);
+              }
+            } catch (e) { console.warn('per-system cfg seed failed', e); }
+          }
+
           // BIOS files into the system dir (neogeo.zip for FBNeo/MAME,
-          // scph*.bin for PSX, gb/gbc/gba boot ROMs — all optional)
+          // neocd/*.bin for NeoCD, scph*.bin for PSX, gb/gbc/gba boot ROMs —
+          // all optional)
           for (const [b, data] of Object.entries(biosFiles)) {
-            try { FS.writeFile(HOME + '/system/' + b, data); } catch { /* ignore */ }
+            // 子目录形态的 BIOS（neocd/neocd.bin 等）先建目录再写
+            const mk = (base) => {
+              const p = base + '/' + b;
+              try { if (b.includes('/')) FS.mkdirTree(p.slice(0, p.lastIndexOf('/'))); } catch { /* flat */ }
+              try { FS.writeFile(p, data); } catch { /* ignore */ }
+            };
+            mk(HOME + '/system');
             // FBNeo/MAME 的部分驱动只在游戏 ROM 同目录找 BIOS（如 kov 需 pgm.zip）——
             // 额外在内容目录放一份
-            try { FS.writeFile(ROM_DIR + '/' + b, data); } catch { /* ignore */ }
+            mk(ROM_DIR);
           }
 
           // snapshot the pulled cfg signature so persistFiles can tell a
@@ -480,20 +641,154 @@
 
       // factory promise resolves once the runtime is ready
       window.__raModule = Module;
+      // ROM 流式下载:FS 就绪后分块写入虚拟磁盘(见顶部说明),必须在 callMain 前完成
+      if (!menuMode) {
+        loadingText.textContent = '正在下载游戏…';
+        const romResp = await fetch(gameUrl);
+        if (!romResp.ok) throw new Error('ROM 下载失败: HTTP ' + romResp.status);
+        const total = Number(romResp.headers.get('content-length') || 0);
+        const romPath = ROM_DIR + '/' + romName;
+        const romFile = Module.FS.open(romPath, 'w+');
+        // 知道大小时一次性预分配精确缓冲,避免 MEMFS 倍增扩容的 2× 瞬时峰值
+        if (total) { try { Module.FS.truncate(romPath, total); } catch { /* 预分配失败不影响 */ } }
+        const romReader = romResp.body.getReader();
+        let pos = 0, lastDraw = 0;
+        try {
+          for (;;) {
+            const { done, value } = await romReader.read();
+            if (done) break;
+            Module.FS.write(romFile, value, 0, value.length, pos);
+            pos += value.length;
+            const now = Date.now();
+            if (now - lastDraw > 200) {
+              lastDraw = now;
+              loadingText.textContent = total
+                ? `正在下载游戏… ${(pos / 1048576).toFixed(0)}/${(total / 1048576).toFixed(0)}MB (${Math.floor(pos / total * 100)}%)`
+                : `正在下载游戏… ${(pos / 1048576).toFixed(0)}MB`;
+            }
+          }
+        } catch (e) {
+          try { romReader.cancel(); } catch { /* ignore */ }
+          try { Module.FS.unlink(romPath); } catch { /* ignore */ }
+          throw new Error('ROM 下载失败: ' + (e && e.message || e));
+        }
+        Module.FS.close(romFile);
+        if (total && pos !== total) {
+          try { Module.FS.unlink(romPath); } catch { /* ignore */ }
+          throw new Error('ROM 下载不完整: ' + pos + '/' + total + ' 字节');
+        }
+      }
       // preload bundled shaders + menu assets (ozone/rgui/glui) into the FS
       const writeFileTree = (buf, p) => {
         Module.FS.mkdirTree(p.slice(0, p.lastIndexOf('/')));
         Module.FS.writeFile(p, buf);
       };
-      try {
-        const man = await (await fetch('/retroarch/shaders/manifest.json', { cache: 'no-cache' })).json();
-        for (const f of man) {
-          try {
-            const buf = new Uint8Array(await (await fetch('/retroarch/shaders/' + f, { cache: 'no-cache' })).arrayBuffer());
-            writeFileTree(buf, HOME + '/system/shaders/' + f);
-          } catch { /* skip missing shader */ }
+      // 着色器按需加载:只拉当前会话真正用到的文件——
+      //   1) per-system cfg 配置的 video_shader 预设及其引用链
+      //   2) 当前核心的自动着色器预设(userdata/<核心>/<核心>.glslp)及其引用链
+      // 此前每次启动全量拉 236 个文件/11MB。.glslp 内 shaderN/textureN 相对
+      // 预设所在目录解析;自动预设里也出现 system/shaders 绝对路径。
+      const SHADERS_WEB = '/retroarch/shaders/';
+      const SHADERS_FS = HOME + '/system/shaders/';
+      const SYS_SHADERS_PREFIX = SHADERS_FS;
+      const shaderSeen = new Set();
+      const encPath = (p) => p.split('/').map(encodeURIComponent).join('/');
+      const loadShaderEntry = async (rel) => {
+        rel = rel.replace(/\\/g, '/').replace(/\/(?:\.\/)+/g, '/').replace(/\/+$/, '');
+        while (rel.includes('/../')) {
+          const segs = rel.split('/');
+          const up = segs.indexOf('..');
+          if (up <= 0) break;
+          segs.splice(up - 1, 2);
+          rel = segs.join('/');
         }
+        if (!rel || shaderSeen.has(rel)) return;
+        shaderSeen.add(rel);
+        try {
+          const resp = await fetch(SHADERS_WEB + encPath(rel), { cache: 'no-cache' });
+          if (!resp.ok) return;
+          // body 只能读一次:先取 text(要解析引用),写盘由同一份文本编码而来
+          const txt = await resp.text();
+          writeFileTree(new TextEncoder().encode(txt), SHADERS_FS + rel);
+          if (!/\.glslp$/i.test(rel)) return;
+          const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/') + 1) : '';
+          for (const m of txt.matchAll(/^\s*(?:shader|texture)\d*\s*=\s*"?([^"\r\n]+?)"?\s*$/gm)) {
+            const ref = m[1];
+            if (ref.startsWith(SYS_SHADERS_PREFIX)) await loadShaderEntry(ref.slice(SYS_SHADERS_PREFIX.length));
+            else if (/^(https?:|\/)/.test(ref)) continue;
+            else await loadShaderEntry(dir + ref);
+          }
+        } catch { /* 单个文件缺失不影响其余 */ }
+      };
+      try {
+        // 1) per-system cfg 配置的着色器
+        let cfgShader = '';
+        try {
+          const t = Module.FS.readFile(CFG_PATH, { encoding: 'utf8' });
+          const m = /(?:^|\n)video_shader\s*=\s*"([^"]*)"/.exec(t);
+          if (m) cfgShader = m[1];
+        } catch { /* ignore */ }
+        if (cfgShader.startsWith(SYS_SHADERS_PREFIX)) await loadShaderEntry(cfgShader.slice(SYS_SHADERS_PREFIX.length));
+        // 2) 当前核心的自动着色器预设
+        try {
+          const pman = await (await fetch('/retroarch/presets/manifest.json', { cache: 'no-cache' })).json();
+          const coreLc = core.toLowerCase();
+          for (const p of pman) {
+            if (p.toLowerCase().split('/')[0] !== coreLc) continue;
+            const resp = await fetch('/retroarch/presets/' + encPath(p), { cache: 'no-cache' });
+            if (!resp.ok) continue;
+            const txt = await resp.text();
+            writeFileTree(new TextEncoder().encode(txt), HOME + '/userdata/' + p);
+            for (const m of txt.matchAll(/^\s*(?:shader|texture)\d*\s*=\s*"?([^"\r\n]+?)"?\s*$/gm)) {
+              if (m[1].startsWith(SYS_SHADERS_PREFIX)) await loadShaderEntry(m[1].slice(SYS_SHADERS_PREFIX.length));
+            }
+          }
+        } catch { /* no presets */ }
       } catch { /* no shaders bundled */ }
+      try {
+        // 遮罩按需加载:只拉本系统目录 + per-system cfg 已引用的遮罩
+        // (此前每次启动全量拉 120 个文件/2.4MB)。
+        // 前端"画面设置"里可给任意系统挑任意目录的遮罩——cfg 引用的文件
+        // 在此一并拉起,跨目录选择在下次启动时同样生效。
+        const oman = await (await fetch('/retroarch/overlays/manifest.json', { cache: 'no-cache' })).json();
+        const OVERLAY_DIR = { nes:'nes', snes:'sfc', megadrive:'md', pcengine:'pce', pcenginecd:'pcecd',
+          segacd:'segacd', sega32x:'sega32x', gamegear:'gg', sms:'sms', gb:'gb', gbc:'gbc', gba:'gba',
+          psx:'ps', n64:'n64', neogeo:'neogeo', neogeocd:'neocd', fbneo:'arcade', mame:'mame',
+          cps1:'arcade', cps2:'arcade', cps3:'arcade', ngp:'ngp', ngpc:'ngp',
+          wonderswan:'wsc', wonderswancolor:'wsc' };
+        const wanted = new Set();
+        const fetched = new Set();
+        const fetchOverlay = async (rel) => {
+          if (!rel || fetched.has(rel)) return;
+          fetched.add(rel);
+          try {
+            const buf = new Uint8Array(await (await fetch('/retroarch/overlays/' + encPath(rel), { cache: 'no-cache' })).arrayBuffer());
+            writeFileTree(buf, HOME + '/system/overlays/' + rel);
+          } catch { /* skip missing overlay */ }
+        };
+        const odir = OVERLAY_DIR[sysIdRaw] || '';
+        if (odir) for (const f of oman) if (f.startsWith(odir + '/')) wanted.add(f);
+        try {
+          const t = Module.FS.readFile(CFG_PATH, { encoding: 'utf8' });
+          const m = /(?:^|\n)input_overlay\s*=\s*"([^"]*)"/.exec(t);
+          if (m && m[1]) {
+            const rel = m[1]
+              .replace(/^~\/retroarch\/system\/overlays\//, '')
+              .replace(HOME + '/system/overlays/', '')
+              .replace(/^\//, '');
+            if (rel) {
+              wanted.add(rel);
+              await fetchOverlay(rel);
+              const txt = (() => { try { return new TextDecoder().decode(Module.FS.readFile(HOME + '/system/overlays/' + rel)); } catch { return ''; } })();
+              const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/') + 1) : '';
+              for (const im of txt.matchAll(/^\s*overlay\d+_overlay\d*\s*=\s*"?([^"\r\n]+?)"?\s*$/gm)) {
+                wanted.add(dir + im[1].replace(/^.*\//, ''));
+              }
+            }
+          }
+        } catch { /* ignore */ }
+        for (const f of wanted) await fetchOverlay(f);
+      } catch { /* no overlays bundled */ }
       try {
         loadingText.textContent = '正在加载菜单素材…';
         // cache-bust: stale cached packs (missing CJK fonts) caused "???" menus
@@ -507,6 +802,32 @@
         }
       } catch (e) { console.warn('assets pack load failed', e); }
       Module.callMain(args);
+      // per-system 着色器应用:RA 1.22 启动时不再读 video_shader 键,改用
+      // _cmd_set_shader 在视频驱动就绪后把 per-system cfg 里配置的预设应用
+      // 上去(最多重试 20 次 × 1.5s,等待视频驱动与内容就绪)
+      if (!menuMode && SYS_CFG_PATH && Module._cmd_set_shader) {
+        var shaderTries = 0;
+        var shaderTimer = setInterval(() => {
+          if (++shaderTries > 20) { clearInterval(shaderTimer); return; }
+          try {
+            var t = Module.FS.readFile(CFG_PATH, { encoding: 'utf8' });
+            var m = t.match(/video_shader = "([^"]*)"/);
+            if (!m || !m[1]) return; // 该系统未配置着色器,停止重试
+            var bytes = new TextEncoder().encode(m[1]);
+            var buf = Module._malloc(bytes.length + 1);
+            var heap = new Uint8Array(Module.HEAPU8.buffer, Module.HEAPU8.byteOffset, Module.HEAPU8.length);
+            heap.set(bytes, buf); heap[buf + bytes.length] = 0;
+            var ret = Module._cmd_set_shader(buf);
+            Module._free(buf);
+            if (ret) {
+              clearInterval(shaderTimer);
+              pushLog('[wemu] shader applied: ' + m[1]);
+            } else if (shaderTries >= 20) {
+              pushLog('[wemu] shader apply FAILED: ' + m[1]);
+            }
+          } catch (e) { if (shaderTries >= 20) pushLog('[wemu] shader apply err: ' + e.message); }
+        }, 1500);
+      }
       document.getElementById('loading').classList.add('hide');
       report('ejs-start');
       report('ra-ready');
